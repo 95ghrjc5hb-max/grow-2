@@ -62,50 +62,30 @@ const limiter = rateLimit({
 //app.use('/api/', limiter);
 
 // ==========================================
-// 3. DATABASE INFRASTRUCTURE
+// 3. DATABASE INFRASTRUCTURE (SUPABASE)
 // ==========================================
-// Note: Ensure MONGODB_URI is in your .env filenazmulislam62617_
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('🟢 [DATABASE] Dedicated SaaS Database engine connected successfully.'))
-  .catch((err) => {
-    console.error('🔴 [DATABASE] Engine connection failure:', err);
-    process.exit(1);
-  });
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.SUPABASE_URL;
+// Using the Secret Key for secure backend operations
+const supabaseKey = process.env.SUPABASE_SECRET_KEY; 
+
+// Initialize the Supabase client
+export const supabase = createClient(supabaseUrl, supabaseKey);
+
+if (supabase) {
+  console.log('🟢 [DATABASE] Dedicated SaaS Database engine (Supabase) connected successfully.');
+} else {
+  console.error('🔴 [DATABASE] Engine connection failure.');
+}
 
 // ==========================================
-// 4. ARCHITECTURAL SCHEMAS
+// 4. ARCHITECTURAL SCHEMAS 
 // ==========================================
-const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true },
-  otp: { type: String }, // Stores generated OTP
-  isVerified: { type: Boolean, default: false }, // Tracks verification status
-  createdAt: { type: Date, default: Date.now }
-});
-
-const User = mongoose.model('User', userSchema);
-
-const conversationSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  customer_name: { type: String, default: 'WhatsApp Lead' },
-  channel: { type: String, required: true },
-  last_message: { type: String },
-  updated_date: { type: Date, default: Date.now }
-});
-const Conversation = mongoose.model('Conversation', conversationSchema);
-
-const orderSchema = new mongoose.Schema({
-  order_id: { type: String, required: true, unique: true },
-  customer_name: { type: String, required: true },
-  phone: { type: String, required: true },
-  address: { type: String, required: true },
-  product_name: { type: String, required: true },
-  total_price: { type: Number, required: true },
-  status: { type: String, enum: ['pending', 'confirmed', 'shipped', 'cancelled'], default: 'pending' },
-  channel: { type: String, default: 'WhatsApp Lead' },
-  createdAt: { type: Date, default: Date.now }
-});
-const Order = mongoose.model('Order', orderSchema);
+// Note: Unlike Mongoose (MongoDB), Supabase (PostgreSQL) does not require 
+// defining schemas in the code.
+// You must create the 'users', 'conversations', and 'orders' tables 
+// directly in the Supabase Dashboard via the "Table Editor".
 
 // ==========================================
 // 5. SECURITY AUTHENTICATION MIDDLEWARE
@@ -136,8 +116,13 @@ app.post('/api/auth/signup', async (req, res) => {
     const { email, password } = req.body;
 
     // Check if user already exists
-    const userExists = await User.findOne({ email });
-    if (userExists) {
+    const userExists = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    if (userExists.data) {
       return res.status(400).json({ 
         success: false, 
         error: 'Identity already exists in system.' 
@@ -150,14 +135,27 @@ app.post('/api/auth/signup', async (req, res) => {
     // Secure password hashing
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Register new user instance
-   const newUser = new User({
-  email,
-  password: hashedPassword,
-  otp: otpCode // <--- This saves OTP in MongoDB
-});
+   // Register new user instance in Supabase
+    const { data: newUser, error: insertError } = await supabase
+      .from('users')
+      .insert([
+        {
+          email: email,
+          password: hashedPassword,
+          otp: otpCode,
+          isVerified: false
+        }
+      ])
+      .select();
 
-    await newUser.save();
+    if (insertError) {
+      console.error("Insert Error:", insertError);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to register user in database.' 
+      });
+    }
+
 
     // Futuristic, responsive HTML Email Template
     const emailHtmlContent = `
@@ -232,8 +230,13 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const sanitizedOtp = otp.toString().trim();
 
     // 2. Retrieve target user record securely
-    const user = await User.findOne({ email: normalizedEmail });
-    if (!user) {
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (fetchError || !user) {
       return res.status(404).json({ 
         success: false, 
         error: 'Identity record not found in the system registry.' 
