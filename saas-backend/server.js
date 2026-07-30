@@ -1,5 +1,5 @@
 import express from 'express';
-import mongoose from 'mongoose';
+// mongoose import removed as the system is fully migrated to Supabase
 import cors from 'cors';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import nodemailer from 'nodemailer';
 import dashboardRoutes from './routes/dashboardRoutes.js';
+import { createClient } from '@supabase/supabase-js';
 
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -48,7 +49,6 @@ app.use(cors({
 // 2. Security headers (Placed after CORS)
 app.use(helmet());
 
-
 app.use(express.json({ limit: '10kb' })); 
 app.use(morgan('dev')); 
 
@@ -64,8 +64,6 @@ const limiter = rateLimit({
 // ==========================================
 // 3. DATABASE INFRASTRUCTURE (SUPABASE)
 // ==========================================
-import { createClient } from '@supabase/supabase-js';
-
 const supabaseUrl = process.env.SUPABASE_URL;
 // Using the Secret Key for secure backend operations
 const supabaseKey = process.env.SUPABASE_SECRET_KEY; 
@@ -111,6 +109,7 @@ const authenticateToken = (req, res, next) => {
 // 6. CENTRAL CORE API ENDPOINTS
 // ==========================================
 app.use('/api/dashboard', dashboardRoutes);
+
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -135,7 +134,7 @@ app.post('/api/auth/signup', async (req, res) => {
     // Secure password hashing
     const hashedPassword = await bcrypt.hash(password, 12);
 
-   // Register new user instance in Supabase
+    // Register new user instance in Supabase
     const { data: newUser, error: insertError } = await supabase
       .from('users')
       .insert([
@@ -155,7 +154,6 @@ app.post('/api/auth/signup', async (req, res) => {
         error: 'Failed to register user in database.' 
       });
     }
-
 
     // Futuristic, responsive HTML Email Template
     const emailHtmlContent = `
@@ -192,12 +190,16 @@ app.post('/api/auth/signup', async (req, res) => {
     `;
 
     // Dispatch Email via Nodemailer Transporter
-    await transporter.sendMail({
-      from: `"Grow App Core" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: '⚡ Action Required: Your 6-Digit Verification Code',
-      html: emailHtmlContent,
-    });
+    try {
+      await transporter.sendMail({
+        from: `"Grow App Core" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: '⚡ Action Required: Your 6-Digit Verification Code',
+        html: emailHtmlContent,
+      });
+    } catch (emailError) {
+      console.error("⚠️ Email dispatch failed, but registration succeeded:", emailError.message);
+    }
 
     return res.status(201).json({ 
       success: true, 
@@ -205,7 +207,7 @@ app.post('/api/auth/signup', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('CRITICAL DISPATCH ERROR:', error);
+    console.error('CRITICAL REGISTRATION ERROR:', error);
     return res.status(500).json({ 
       success: false, 
       error: 'Internal registration failure.',
@@ -213,6 +215,7 @@ app.post('/api/auth/signup', async (req, res) => {
     });
   }
 });
+
 // Central Authentication - Advanced Neural Verification Endpoint
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
@@ -229,7 +232,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
     const sanitizedOtp = otp.toString().trim();
 
-    // 2. Retrieve target user record securely
+    // 2. Retrieve target user record securely from Supabase
     const { data: user, error: fetchError } = await supabase
       .from('users')
       .select('*')
@@ -259,15 +262,22 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       });
     }
 
-    // 5. Atomic Update: Flush temporary OTP and set verified status
-    user.otp = undefined;
-    user.isVerified = true;
-    await user.save();
+    // 5. Atomic Update: Flush temporary OTP and set verified status via Supabase
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        otp: null, 
+        isVerified: true 
+      })
+      .eq('email', normalizedEmail);
+
+    if (updateError) throw updateError;
 
     // 6. Issue standard authorization JWT token with explicit algorithm
+    // Note: Replaced user._id with user.id for Supabase compatibility
     const token = jwt.sign(
       { 
-        userId: user._id, 
+        userId: user.id, 
         email: user.email 
       }, 
       JWT_SECRET, 
@@ -284,9 +294,9 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       token,
       data: {
         user: { 
-          id: user._id, 
+          id: user.id, 
           email: user.email,
-          isVerified: user.isVerified
+          isVerified: true
         }
       }
     });
@@ -300,42 +310,82 @@ app.post('/api/auth/verify-otp', async (req, res) => {
   }
 });
 
-
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, error: 'Identity records not found.' });
+    
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Credentials missing.' });
+    }
+
+    // Secure user fetch from Supabase
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email.trim().toLowerCase())
+      .single();
+
+    if (fetchError || !user) {
+      return res.status(404).json({ success: false, error: 'Identity records not found.' });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ success: false, error: 'Secured credentials mismatch.' });
+    if (!isMatch) {
+      return res.status(401).json({ success: false, error: 'Secured credentials mismatch.' });
+    }
 
-    const token = jwt.sign({ userId: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    // Token payload using Supabase ID
+    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    
     res.status(200).json({ success: true, token });
   } catch (error) {
+    console.error('CRITICAL LOGIN FAILURE:', error);
     res.status(500).json({ success: false, error: 'Internal authentication failure.' });
   }
 });
 
 app.get('/api/v1/auth/me', authenticateToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('-password');
-    if (!user) return res.status(404).json({ success: false, error: 'User system profile match failed.' });
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', req.user.email)
+      .single();
+
+    if (error || !user) {
+      console.error('Supabase Profile Fetch Error:', error);
+      return res.status(404).json({ success: false, error: 'User system profile match failed.' });
+    }
     
     res.status(200).json({
       status: 'success',
       data: {
-        user: { id: user._id, full_name: user.email.split('@')[0], email: user.email, role: 'administrator' }
+        user: { 
+          id: user.id || user._id, 
+          full_name: user.email.split('@')[0], 
+          email: user.email, 
+          role: 'administrator' 
+        }
       }
     });
   } catch (error) {
+    console.error('Catch block error:', error);
     res.status(500).json({ success: false, error: 'Internal pipeline profile failure.' });
   }
 });
 
+
 app.get('/api/conversations', authenticateToken, async (req, res) => {
   try {
-    const records = await Conversation.find({ userId: req.user.userId }).sort({ updated_date: -1 });
+    // Advanced relational query via Supabase equivalent to MongoDB find & sort
+    const { data: records, error } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('userId', req.user.userId)
+      .order('updated_date', { ascending: false });
+
+    if (error) throw error;
+
     res.status(200).json(records);
   } catch (error) {
     res.status(500).json({ success: false, error: 'Data isolation fetching layer failure.' });
@@ -344,7 +394,14 @@ app.get('/api/conversations', authenticateToken, async (req, res) => {
 
 app.get('/api/v1/orders', async (req, res) => {
   try {
-    const orders = await Order.find().sort({ createdAt: -1 });
+    // Global fetch with descending chronological sort
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('*')
+      .order('createdAt', { ascending: false });
+
+    if (error) throw error;
+
     res.status(200).json({ status: 'success', data: { orders } });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Database tracking bridge connection failure.' });
@@ -353,7 +410,16 @@ app.get('/api/v1/orders', async (req, res) => {
 
 app.patch('/api/v1/orders/:id', async (req, res) => {
   try {
-    const updatedOrder = await Order.findByIdAndUpdate(req.params.id, { status: req.body.status }, { new: true, runValidators: true });
+    // Atomic granular update mapping
+    const { data: updatedOrder, error } = await supabase
+      .from('orders')
+      .update({ status: req.body.status })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error || !updatedOrder) throw error;
+
     res.status(200).json({ status: 'success', data: { order: updatedOrder } });
   } catch (error) {
     res.status(400).json({ success: false, error: 'Schema target tracking violation.' });
@@ -362,13 +428,22 @@ app.patch('/api/v1/orders/:id', async (req, res) => {
 
 app.put('/api/v1/orders/:id', async (req, res) => {
   try {
-    const updatedOrder = await Order.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    // Complete payload configuration execution update
+    const { data: updatedOrder, error } = await supabase
+      .from('orders')
+      .update(req.body)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error || !updatedOrder) throw error;
+
     res.status(200).json({ status: 'success', data: { order: updatedOrder } });
   } catch (error) {
     res.status(400).json({ success: false, error: 'Payload configuration execution rejected.' });
   }
-  
 });
+
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 
