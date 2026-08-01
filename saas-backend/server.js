@@ -12,6 +12,7 @@ import path from 'path';
 import nodemailer from 'nodemailer';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import { createClient } from '@supabase/supabase-js';
+import orderRoutes from './routes/orderRoutes.js';
 
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -391,59 +392,7 @@ app.get('/api/conversations', authenticateToken, async (req, res) => {
     res.status(500).json({ success: false, error: 'Data isolation fetching layer failure.' });
   }
 });
-
-app.get('/api/v1/orders', async (req, res) => {
-  try {
-    // Global fetch with descending chronological sort
-    const { data: orders, error } = await supabase
-      .from('orders')
-      .select('*')
-      .order('createdAt', { ascending: false });
-
-    if (error) throw error;
-
-    res.status(200).json({ status: 'success', data: { orders } });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Database tracking bridge connection failure.' });
-  }
-});
-
-app.patch('/api/v1/orders/:id', async (req, res) => {
-  try {
-    // Atomic granular update mapping
-    const { data: updatedOrder, error } = await supabase
-      .from('orders')
-      .update({ status: req.body.status })
-      .eq('id', req.params.id)
-      .select()
-      .single();
-
-    if (error || !updatedOrder) throw error;
-
-    res.status(200).json({ status: 'success', data: { order: updatedOrder } });
-  } catch (error) {
-    res.status(400).json({ success: false, error: 'Schema target tracking violation.' });
-  }
-});
-
-app.put('/api/v1/orders/:id', async (req, res) => {
-  try {
-    // Complete payload configuration execution update
-    const { data: updatedOrder, error } = await supabase
-      .from('orders')
-      .update(req.body)
-      .eq('id', req.params.id)
-      .select()
-      .single();
-
-    if (error || !updatedOrder) throw error;
-
-    res.status(200).json({ status: 'success', data: { order: updatedOrder } });
-  } catch (error) {
-    res.status(400).json({ success: false, error: 'Payload configuration execution rejected.' });
-  }
-});
-
+app.use('/api/v1/orders', orderRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 
