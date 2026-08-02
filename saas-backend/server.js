@@ -13,6 +13,7 @@ import nodemailer from 'nodemailer';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import { createClient } from '@supabase/supabase-js';
 import orderRoutes from './routes/orderRoutes.js';
+import integrationRoutes from './routes/integrationRoutes.js';
 
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -393,6 +394,7 @@ app.get('/api/conversations', authenticateToken, async (req, res) => {
   }
 });
 app.use('/api/v1/orders', orderRoutes);
+app.use('/api/integrations', integrationRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 

@@ -47,7 +47,6 @@ export default function Integrations() {
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const { toast } = useToast();
 
-  // WhatsApp Credentials State
   const [waCredentials, setWaCredentials] = useState({
     phoneNumber: "",
     phoneNumberId: "",
@@ -55,46 +54,52 @@ export default function Integrations() {
     accessToken: ""
   });
 
-  // Fetch existing integration configurations from backend
   useEffect(() => {
     fetchActiveIntegrations();
   }, []);
 
+  // Safe API Fetching Handler
   const fetchActiveIntegrations = async () => {
     try {
       setLoading(true);
-      // Replace with your actual SaaS backend API endpoint
       const res = await fetch("/api/integrations");
-      const data = await res.json();
-      setChannels(data || []);
+      const result = await res.json();
+
+      // Safely extract array regardless of backend response structure
+      const channelList = Array.isArray(result)
+        ? result
+        : (result.data || result.integrations || []);
+
+      setChannels(channelList);
     } catch (error) {
       console.error("Failed to load integrations", error);
+      setChannels([]); // Default to empty array to prevent crash
     } finally {
       setLoading(false);
     }
   };
 
-  const getChannel = (platform) => channels.find((c) => c.platform === platform);
+  // Safe array finder method
+  const getChannel = (platform) => {
+    if (!Array.isArray(channels)) return null;
+    return channels.find((c) => c.platform === platform);
+  };
 
-  // META OFFICIAL OAUTH HANDLER (Facebook & Instagram)
   const handleMetaOAuth = (platformKey) => {
-    const appId = "YOUR_META_APP_ID"; // Replace with your real Meta Developer App ID
+    const appId = "YOUR_META_APP_ID";
     const redirectUri = `${window.location.origin}/api/auth/meta/callback`;
     const scope = "pages_show_list,pages_messaging,instagram_basic,instagram_manage_messages,pages_read_engagement";
     
-    // Official Meta Dialog URL
     const oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&response_type=code&state=${platformKey}`;
     
-    // Open secure popup window
-    const popup = window.open(oauthUrl, "Connect with Meta", "width=600,height=650,status=yes,resizable=yes");
+    window.open(oauthUrl, "Connect with Meta", "width=600,height=650,status=yes,resizable=yes");
 
-    // Listen for the callback message from backend/popup window
     const handlePopupMessage = async (event) => {
       if (event.origin !== window.location.origin) return;
       
       if (event.data?.status === "success") {
         toast({ title: `${platformKey === 'messenger' ? 'Facebook' : 'Instagram'} connected successfully!` });
-        fetchActiveIntegrations(); // Refresh view
+        fetchActiveIntegrations();
         window.removeEventListener("message", handlePopupMessage);
       }
     };
@@ -126,7 +131,6 @@ export default function Integrations() {
     }
   };
 
-  // WHATSAPP API SUBMIT HANDLER
   const handleWhatsAppSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -212,7 +216,6 @@ export default function Integrations() {
         })}
       </div>
 
-      {/* WHATSAPP CREDENTIAL MODAL */}
       <Dialog open={showWhatsAppModal} onOpenChange={setShowWhatsAppModal}>
         <DialogContent className="bg-slate-900 border border-slate-800 text-white max-w-md">
           <DialogHeader>
