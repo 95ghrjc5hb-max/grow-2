@@ -12,10 +12,10 @@ const platforms = [
     desc: "Connect your Facebook Page officially via Meta OAuth to sync and reply to Messenger DMs.",
     icon: MessageCircle,
     color: "blue",
-    gradient: "from-blue-500/20 to-blue-600/5",
-    border: "border-blue-500/20",
+    gradient: "from-slate-900 to-slate-900/90",
+    border: "border-slate-800",
     text: "text-blue-400",
-    btn: "bg-blue-500 hover:bg-blue-600",
+    btn: "bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-sm",
   },
   {
     key: "instagram",
@@ -23,10 +23,10 @@ const platforms = [
     desc: "Connect your Instagram Business Profile via Meta secure login to manage DMs and story replies.",
     icon: Instagram,
     color: "pink",
-    gradient: "from-pink-500/20 to-purple-500/5",
-    border: "border-pink-500/20",
+    gradient: "from-slate-900 to-slate-900/90",
+    border: "border-slate-800",
     text: "text-pink-400",
-    btn: "bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-600 hover:to-purple-600",
+    btn: "bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-sm",
   },
   {
     key: "whatsapp",
@@ -34,10 +34,10 @@ const platforms = [
     desc: "Connect your official WhatsApp Business API credentials to handle automated customer support.",
     icon: Phone,
     color: "green",
-    gradient: "from-green-500/20 to-green-600/5",
-    border: "border-green-500/20",
+    gradient: "from-slate-900 to-slate-900/90",
+    border: "border-slate-800",
     text: "text-green-400",
-    btn: "bg-green-500 hover:bg-green-600",
+    btn: "bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-sm",
   },
    {
     key: "shopify",
@@ -45,10 +45,10 @@ const platforms = [
     desc: "Connect your Shopify store to sync product catalog, stock status, and automate orders.",
     icon: ShoppingBag,
     color: "emerald",
-    gradient: "from-emerald-500/20 to-teal-500/5",
-    border: "border-emerald-500/20",
+    gradient: "from-slate-900 to-slate-900/90",
+    border: "border-slate-800",
     text: "text-emerald-400",
-    btn: "bg-emerald-600 hover:bg-emerald-700",
+    btn: "bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-sm",
   },
 ];
 
@@ -265,16 +265,22 @@ const handleShopifySubmit = (e) => {
                   Account: <span className={p.text}>{channel.account_name}</span>
                 </p>
               )}
-
-              <Button onClick={() => handleConnectClick(p.key)} className={`w-full gap-2 text-white ${connected ? "bg-red-500/15 hover:bg-red-500/25 border border-red-500/20 text-red-400" : p.btn}`}>
-                {connected ? (
-                  "Disconnect Channel"
-                ) : (
+              <Button 
+                onClick={() => handleConnectClick(p.key)} 
+               className={`w-full gap-2 transition-all duration-150 rounded-lg py-2.5 font-medium ${
+                connected 
+                 ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700" 
+                : p.btn
+                  }`}
+                >
+                 {connected ? (
+                "Manage Integration"
+                  ) : (
                   <>
-                    <><ExternalLink className="w-4 h-4" /> Connect {p.name}</>
-                  </>
-                )}
-              </Button>
+                   <ExternalLink className="w-4 h-4" /> Connect
+                      </>
+                   )}
+                  </Button>
             </div>
           );
         })}
