@@ -1,10 +1,21 @@
-import  supabase  from '../config/supabase.js';
+import supabase from '../config/supabase.js';
 
 // Get all orders belonging ONLY to the logged-in user
 export const getOrders = async (req, res) => {
   try {
-    const userId = req.user?.userId || req.user?.id;
+    // 1. Safe extraction of userId
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
 
+    // 2. ⚠️ Safety Check: userId না থাকলে ডাটাবেজে রিকোয়েস্ট না পাঠিয়ে এখানেই আটকে দেওয়া
+    if (!userId || userId === 'undefined') {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        message: "User not authenticated or ID missing"
+      });
+    }
+
+    // 3. Query Supabase Database
     const { data: orders, error } = await supabase
       .from('orders')
       .select('*')
@@ -13,13 +24,13 @@ export const getOrders = async (req, res) => {
 
     if (error) throw error;
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      data: { orders: orders || [] }
+      data: orders || []
     });
   } catch (error) {
-    console.error('🔴 [ORDER FETCH ERROR]:', error.message);
-    res.status(500).json({
+    console.error('[ORDER FETCH ERROR]:', error.message);
+    return res.status(500).json({
       success: false,
       error: error.message
     });
@@ -28,11 +39,18 @@ export const getOrders = async (req, res) => {
 
 // Update order status
 export const updateOrderStatus = async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const userId = req.user?.userId || req.user?.id;
-
   try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+
+    if (!userId || userId === 'undefined') {
+      return res.status(401).json({
+        success: false,
+        error: "Unauthorized user action"
+      });
+    }
+
     const { data, error } = await supabase
       .from('orders')
       .update({ status })
@@ -42,12 +60,13 @@ export const updateOrderStatus = async (req, res) => {
 
     if (error) throw error;
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      data: data[0] || null
+      data: data?.[0] || null
     });
   } catch (error) {
-    res.status(500).json({
+    console.error('[ORDER UPDATE ERROR]:', error.message);
+    return res.status(500).json({
       success: false,
       error: error.message
     });
