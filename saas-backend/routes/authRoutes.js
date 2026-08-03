@@ -1,10 +1,11 @@
 import express from 'express';
+import { beginShopifyAuth, handleShopifyCallback } from '../controllers/shopifyController.js';
+import { authenticateToken } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// Auth verify fallback
-router.get('/me', (req, res) => {
-  res.status(200).json({ success: true, user: req.user || null });
-});
+// Shopify Authentication Routes
+router.get('/shopify', beginShopifyAuth);
+router.get('/shopify/callback', authenticateToken, handleShopifyCallback);
 
 export default router;
