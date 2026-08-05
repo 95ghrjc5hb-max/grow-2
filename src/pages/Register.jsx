@@ -3,22 +3,23 @@ import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { 
-  Mail, 
-  Lock, 
-  Loader2, 
-  CheckCircle2, 
-  Shield, 
-  Eye, 
-  EyeOff, 
-  ArrowLeft, 
+import {
+  Mail,
+  Lock,
+  Loader2,
+  CheckCircle2,
+  Shield,
+  Eye,
+  EyeOff,
+  ArrowLeft,
   RefreshCw,
-  AlertCircle 
+  AlertCircle
 } from "lucide-react";
 import AuthLayout from "@/components/AuthLayout";
 import GoogleIcon from "@/components/GoogleIcon";
 import { toast } from "@/components/ui/use-toast";
-import { useAuth } from "@/lib/AuthContext";
+import { supabase } from "../supabaseClient";
+
 import {
   InputOTP,
   InputOTPGroup,
@@ -27,14 +28,13 @@ import {
 
 export default function Register() {
   const navigate = useNavigate();
-  const { register, verifyOtp } = useAuth(); // Using centralized Auth Context
 
   // Form State
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  
+
   // UX & Security States
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -79,6 +79,7 @@ export default function Register() {
       setError("Passcodes do not match. Please verify.");
       return;
     }
+
     if (password.length < 6) {
       setError("Passcode must be at least 6 characters long.");
       return;
@@ -87,21 +88,24 @@ export default function Register() {
     setLoading(true);
 
     try {
-      // Calling Central Auth Engine
-      const result = await register(cleanEmail, password);
+      // Calling Supabase Auth Engine
+      const { data, error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password: password,
+      });
 
-      if (result.success) {
-        toast({
-          title: "Verification Code Dispatched",
-          description: `Security token sent to ${cleanEmail}`,
-        });
-        setShowOtp(true);
-        setResendTimer(60); // Start 60s cooldown for resend
-      } else {
-        setError(result.message || "Registration failed. Identity may already exist.");
-      }
+      if (error) throw error;
+
+      toast({
+        title: "Verification Code Dispatched",
+        description: `Security token sent to ${cleanEmail}`,
+      });
+
+      setShowOtp(true);
+      setResendTimer(60); // Start 60s cooldown for resend
+
     } catch (err) {
-      setError("System connection error. Please try again.");
+      setError(err.message || "Registration failed. Identity may already exist.");
     } finally {
       setLoading(false);
     }
@@ -110,28 +114,34 @@ export default function Register() {
   // Handle OTP Verification (Step 2)
   const handleVerify = async () => {
     setError("");
-    if (!otpCode || otpCode.length < 6) {
+
+    if (otpCode.length < 6) {
       setError("Please input valid 6-digit cryptographic token.");
       return;
     }
 
     setLoading(true);
+    const cleanEmail = email.trim().toLowerCase();
 
     try {
-      const cleanEmail = email.trim().toLowerCase();
-      const result = await verifyOtp(cleanEmail, otpCode);
+      // Calling Supabase OTP Verification
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: otpCode,
+        type: 'signup'
+      });
 
-      if (result.success) {
-        toast({
-          title: "Identity Verified",
-          description: "Welcome to GROW! Authentication complete.",
-        });
-        navigate("/dashboard", { replace: true });
-      } else {
-        setError(result.message || "Invalid or expired security code.");
-      }
+      if (error) throw error;
+
+      toast({
+        title: "Identity Verified",
+        description: "Welcome to GROW! Authentication complete.",
+      });
+
+      navigate("/dashboard", { replace: true });
+
     } catch (err) {
-      setError("Verification failed. Server unreachable.");
+      setError(err.message || "Invalid or expired security code.");
     } finally {
       setLoading(false);
     }
@@ -140,25 +150,26 @@ export default function Register() {
   // Resend OTP Logic
   const handleResendOtp = async () => {
     if (resendTimer > 0 || isResending) return;
-    
+
     setIsResending(true);
     setError("");
+    const cleanEmail = email.trim().toLowerCase();
 
     try {
-      const cleanEmail = email.trim().toLowerCase();
-      const result = await register(cleanEmail, password);
+      const { data, error } = await supabase.auth.resend({
+        type: 'signup',
+        email: cleanEmail,
+      });
 
-      if (result.success) {
-        toast({
-          title: "New Code Sent",
-          description: `Fresh verification code sent to ${cleanEmail}`,
-        });
-        setResendTimer(60);
-      } else {
-        setError(result.message || "Unable to resend security code.");
-      }
+      if (error) throw error;
+
+      toast({
+        title: "New Code Sent",
+        description: `Fresh verification code sent to ${cleanEmail}`,
+      });
+      setResendTimer(60);
     } catch (err) {
-      setError("Resend request failed.");
+      setError(err.message || "Unable to resend security code.");
     } finally {
       setIsResending(false);
     }
@@ -176,7 +187,7 @@ export default function Register() {
     if (strength === 1) return "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.8)] border-rose-400/50";
     if (strength === 2) return "bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.8)] border-amber-300/50";
     if (strength === 3) return "bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.8)] border-cyan-300/50";
-    if (strength >= 4) return "bg-emerald-400 shadow-[0_0_15px_rgba(52,211,153,1)] border-emerald-300/50";
+    if (strength === 4) return "bg-emerald-400 shadow-[0_0_15px_rgba(52,211,153,1)] border-emerald-300/50";
     return "bg-slate-800/80 border-slate-700/50";
   };
 
@@ -206,10 +217,10 @@ export default function Register() {
           >
             <InputOTPGroup className="gap-2">
               {[0, 1, 2, 3, 4, 5].map((index) => (
-                <InputOTPSlot 
-                  key={index} 
-                  index={index} 
-                  className="bg-slate-900/80 border-slate-800 text-teal-300 text-xl font-mono focus:border-teal-400 focus:ring-1 focus:ring-teal-400/30 transition-all rounded-lg h-14 w-12" 
+                <InputOTPSlot
+                  key={index}
+                  index={index}
+                  className="bg-slate-900/80 border-slate-800 text-teal-300 text-xl font-mono focus:border-teal-500 focus:ring-1 focus:ring-teal-500/50 transition-all rounded-lg w-12 h-14"
                 />
               ))}
             </InputOTPGroup>
@@ -235,8 +246,8 @@ export default function Register() {
             onClick={handleResendOtp}
             disabled={resendTimer > 0 || isResending}
             className={`flex items-center gap-1 transition-colors ${
-              resendTimer > 0 
-                ? "text-slate-600 cursor-not-allowed" 
+              resendTimer > 0
+                ? "text-slate-600 cursor-not-allowed"
                 : "text-teal-400 hover:underline cursor-pointer"
             }`}
           >
@@ -246,7 +257,7 @@ export default function Register() {
         </div>
 
         <Button
-          className="w-full h-12 bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold shadow-[0_0_20px_rgba(20,184,166,0.3)] transition-all disabled:opacity-50"
+          className="w-full h-12 bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold shadow-[0_0_20px_rgba(20,184,166,0.3)] transition-all"
           onClick={handleVerify}
           disabled={loading || otpCode.length < 6}
         >
@@ -285,7 +296,7 @@ export default function Register() {
       <Button
         variant="outline"
         type="button"
-        className="w-full h-11 text-sm font-medium mb-6 bg-slate-900/40 border-slate-800 hover:bg-slate-800 text-slate-200 transition-all"
+        className="w-full h-11 text-sm font-medium mb-6 bg-slate-900/40 border-slate-800 hover:bg-slate-800 text-slate-300 transition-colors"
         onClick={handleGoogle}
       >
         <GoogleIcon className="w-5 h-5 mr-2" />
@@ -297,7 +308,7 @@ export default function Register() {
           <div className="w-full border-t border-slate-800" />
         </div>
         <div className="relative flex justify-center text-[11px] uppercase tracking-wider font-medium">
-          <span className="bg-[#0d111a] px-3 text-slate-500 font-mono">Or register with email</span>
+          <span className="bg-[#0f1117] px-3 text-slate-500 font-mono">Or register with email</span>
         </div>
       </div>
 
@@ -309,9 +320,9 @@ export default function Register() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Work Email */}
+        {/* Email */}
         <div className="space-y-2">
-          <Label htmlFor="email" className="text-slate-300 font-medium text-xs uppercase tracking-wider">Work Email</Label>
+          <Label htmlFor="email" className="text-slate-300 font-medium text-xs uppercase tracking-wider">Email Address</Label>
           <div className="relative">
             <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
             <Input
@@ -320,7 +331,7 @@ export default function Register() {
               placeholder="you@company.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-9 h-11 bg-slate-900/50 border-slate-800 text-slate-100 focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 transition-all placeholder:text-slate-600 rounded-lg"
+              className="pl-9 h-11 bg-slate-900/50 border-slate-800 text-slate-100 focus:border-teal-500 focus:ring-1 focus:ring-teal-500/50"
               required
             />
           </div>
@@ -328,7 +339,7 @@ export default function Register() {
 
         {/* Password */}
         <div className="space-y-2">
-          <Label htmlFor="password" className="text-slate-300 font-medium text-xs uppercase tracking-wider">Passcode</Label>
+          <Label htmlFor="password" className="text-slate-300 font-medium text-xs uppercase tracking-wider">Password</Label>
           <div className="relative">
             <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
             <Input
@@ -337,7 +348,7 @@ export default function Register() {
               placeholder="Min. 6 characters"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-9 pr-10 h-11 bg-slate-900/50 border-slate-800 text-slate-100 focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 transition-all placeholder:text-slate-600 rounded-lg"
+              className="pl-9 pr-10 h-11 bg-slate-900/50 border-slate-800 text-slate-100 focus:border-teal-500 focus:ring-1 focus:ring-teal-500/50"
               required
             />
             <button
@@ -348,7 +359,7 @@ export default function Register() {
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          
+
           {/* Cybernetic Password Strength Meter */}
           {password.length > 0 && (
             <div className="flex gap-1.5 mt-2 h-1">
@@ -362,7 +373,7 @@ export default function Register() {
 
         {/* Confirm Password */}
         <div className="space-y-2">
-          <Label htmlFor="confirm" className="text-slate-300 font-medium text-xs uppercase tracking-wider">Confirm Passcode</Label>
+          <Label htmlFor="confirm" className="text-slate-300 font-medium text-xs uppercase tracking-wider">Confirm Password</Label>
           <div className="relative">
             <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
             <Input
@@ -371,7 +382,7 @@ export default function Register() {
               placeholder="Re-enter passcode"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="pl-9 h-11 bg-slate-900/50 border-slate-800 text-slate-100 focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 transition-all placeholder:text-slate-600 rounded-lg"
+              className="pl-9 h-11 bg-slate-900/50 border-slate-800 text-slate-100 focus:border-teal-500 focus:ring-1 focus:ring-teal-500/50"
               required
             />
           </div>
@@ -379,7 +390,7 @@ export default function Register() {
 
         <Button
           type="submit"
-          className="w-full h-12 bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold shadow-[0_0_20px_rgba(20,184,166,0.3)] transition-all mt-6 rounded-lg"
+          className="w-full h-12 bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold shadow-[0_0_20px_rgba(20,184,166,0.3)] transition-all mt-6"
           disabled={loading}
         >
           {loading ? (
