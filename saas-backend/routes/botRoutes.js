@@ -1,9 +1,9 @@
-import express from 'express';
-import { getProducts, addProduct } from '../controllers/botController.js';
-
+const express = require('express');
 const router = express.Router();
+const botController = require('../controllers/botController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-router.get('/products', getProducts);
-router.post('/products', addProduct);
+router.get('/config', authMiddleware, botController.getBotConfig);
+router.post('/config', authMiddleware, botController.saveBotConfig);
 
-export default router;
+module.exports = router;

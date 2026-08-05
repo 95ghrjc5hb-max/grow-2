@@ -1,39 +1,73 @@
-import { supabase } from '../config/supabase.js';
+onst supabase = require('../config/supabase');
 
-// Fetch all AI training products for authenticated user
-export const getProducts = async (req, res) => {
+// Get Bot Config for logged-in user
+exports.getBotConfig = async (req, res) => {
   try {
-    const userId = req.user?.userId || req.user?.id;
+    const userId = req.user.id; // Comes from authMiddleware
 
     const { data, error } = await supabase
-      .from('products')
+      .from('bot_configs')
       .select('*')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .maybeSingle();
 
     if (error) throw error;
 
-    res.status(200).json(data || []);
+    // If no config found, return default fallback structure
+    if (!data) {
+      return res.status(200).json({
+        success: true,
+        isConfigured: false,
+        config: {
+          llm_provider: 'Groq Cloud',
+          model_name: 'llama-3.1-8b-instant',
+          api_key: '',
+          system_prompt: 'Use this product inventory dataset as the primary ground-truth knowledge base to reply to customer pricing and detail queries via Groq.'
+        }
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      isConfigured: true,
+      config: data
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Add new product entry for AI training dataset
-export const addProduct = async (req, res) => {
-  const userId = req.user?.userId || req.user?.id;
-  const { name, price, stock, description } = req.body;
-
+// Save or Update Bot Config
+exports.saveBotConfig = async (req, res) => {
   try {
+    const userId = req.user.id;
+    const { llm_provider, model_name, api_key, system_prompt } = req.body;
+
+    if (!system_prompt) {
+      return res.status(400).json({ success: false, message: 'System prompt is required' });
+    }
+
     const { data, error } = await supabase
-      .from('products')
-      .insert([{ user_id: userId, name, price, stock, description }])
-      .select();
+      .from('bot_configs')
+      .upsert({
+        user_id: userId,
+        llm_provider: llm_provider || 'Groq Cloud',
+        model_name: model_name || 'llama-3.1-8b-instant',
+        api_key: api_key || null,
+        system_prompt: system_prompt,
+        updated_at: new Date()
+      }, { onConflict: 'user_id' })
+      .select()
+      .single();
 
     if (error) throw error;
 
-    res.status(201).json(data[0]);
+    return res.status(200).json({
+      success: true,
+      message: 'Bot Configuration saved successfully!',
+      config: data
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

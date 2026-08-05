@@ -24,6 +24,7 @@ import BotTraining from "@/pages/BotTraining";
 import OrderManagement from "@/pages/OrderManagement";
 import Integrations from "@/pages/Integrations";
 import SettingsPage from "@/pages/SettingsPage";
+import NewBotTraining from "@/pages/NewBotTraining";
 
 // Legal Pages
 import PrivacyPolicy from "@/components/PrivacyPolicy";
@@ -79,6 +80,7 @@ export default function App() {
               <Route path="orders" element={<OrderManagement />} />
               <Route path="integrations" element={<Integrations />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route path="/new-training" element={<NewBotTraining />} />
             </Route>
 
             {/* ========================================== */}

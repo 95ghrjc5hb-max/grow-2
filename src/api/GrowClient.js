@@ -106,7 +106,7 @@ export const Grow = {
     }
   },
   
-  entities: {
+    entities: {
     Conversation: {
       list: async () => {
         const response = await client.get('/conversations');
@@ -118,18 +118,30 @@ export const Grow = {
         return response.success ? response.data : { success: false };
       }
     },
-    
-    Order: {
+    Orders: {
       list: async () => {
         const response = await client.get('/orders');
         return response.success ? response.data : [];
       }
     },
-    
     Channel: {
       list: async () => {
         const response = await client.get('/channels');
         return response.success ? response.data : [];
+      }
+    },
+    BotConfig: {
+      list: async () => {
+        const response = await client.get('/bot-config');
+        return response.success ? response.data : [];
+      },
+      create: async (payload) => {
+        const response = await client.post('/bot-config', payload);
+        return response.success ? response.data : null;
+      },
+      update: async (id, payload) => {
+        const response = await client.patch(`/bot-config/${id}`, payload);
+        return response.success ? response.data : null;
       }
     }
   }
