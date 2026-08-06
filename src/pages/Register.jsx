@@ -104,14 +104,14 @@ export default function Register() {
       setShowOtp(true);
       setResendTimer(60); // Start 60s cooldown for resend
 
-    } catch (err) {
-      setError(err.message || "Registration failed. Identity may already exist.");
-    } finally {
-      setLoading(false);
-    }
+   } catch (err) {
+   const errorMessage = typeof err.message === 'string' ? err.message : "Internal Server Error (500)";
+    setError(errorMessage);
+   }
   };
 
   // Handle OTP Verification (Step 2)
+    // Handle OTP Verification (Step 2)
   const handleVerify = async () => {
     setError("");
 
@@ -124,11 +124,11 @@ export default function Register() {
     const cleanEmail = email.trim().toLowerCase();
 
     try {
-      // Calling Supabase OTP Verification
+      // Calling Supabase OTP Verification with correct type ('email')
       const { data, error } = await supabase.auth.verifyOtp({
         email: cleanEmail,
         token: otpCode,
-        type: 'signup'
+        type: 'email', 
       });
 
       if (error) throw error;
@@ -139,13 +139,14 @@ export default function Register() {
       });
 
       navigate("/dashboard", { replace: true });
-
+      
     } catch (err) {
       setError(err.message || "Invalid or expired security code.");
     } finally {
       setLoading(false);
     }
   };
+
 
   // Resend OTP Logic
   const handleResendOtp = async () => {

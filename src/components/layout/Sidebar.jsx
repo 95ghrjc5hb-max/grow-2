@@ -9,6 +9,8 @@ import {
   Settings,
   LogOut
 } from "lucide-react";
+// 1. Imported useAuth from AuthContext
+import { useAuth } from "@/lib/AuthContext"; 
 
 const navItems = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
@@ -22,11 +24,14 @@ const navItems = [
 export default function Sidebar({ onCloseMobile }) {
   const location = useLocation();
   const navigate = useNavigate();
+  
+  // 2. Extracted logout function from useAuth
+  const { logout } = useAuth();
 
   // Sign out handler function
-  const handleSignOut = () => {
-    localStorage.removeItem("grow_secure_token");
-    window.location.href = "/register"; 
+  const handleSignOut = async (e) => {
+    e.preventDefault();
+    await logout(); // 3. Triggered Supabase sign out protocol
   };
 
   return (
@@ -78,6 +83,7 @@ export default function Sidebar({ onCloseMobile }) {
           })}
         </nav>
       </div>
+      
       {/* Footer Section: Privacy, Terms & Sign Out */}
       <div className="pt-5 border-t border-white/10 flex flex-col gap-4">
         
