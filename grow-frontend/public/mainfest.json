@@ -1,0 +1,9 @@
+{
+  "short_name": "Grow",
+  "name": "Grow SaaS Enterprise",
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "display": "standalone",
+  "icons": []
+}

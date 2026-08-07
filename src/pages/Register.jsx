@@ -42,7 +42,7 @@ export default function Register() {
 
   // OTP States
   const [showOtp, setShowOtp] = useState(false);
-  const [otpCode, setOtpCode] = useState("");
+  const [otpCode, setOtpCode] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
   const [isResending, setIsResending] = useState(false);
 
@@ -102,12 +102,14 @@ export default function Register() {
       });
 
       setShowOtp(true);
-      setResendTimer(60); // Start 60s cooldown for resend
+      setResendTimer(60); 
+      setLoading(false); 
 
-   } catch (err) {
-   const errorMessage = typeof err.message === 'string' ? err.message : "Internal Server Error (500)";
-    setError(errorMessage);
-   }
+    } catch (err) {
+      const errorMessage = typeof err.message === 'string' ? err.message : "Internal Server Error (500)";
+      setError(errorMessage);
+      setLoading(false); 
+    }
   };
 
   // Handle OTP Verification (Step 2)

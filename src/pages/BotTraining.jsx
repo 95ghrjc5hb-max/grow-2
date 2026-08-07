@@ -6,10 +6,10 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 
 // Sub-components Import
-import AiConfigBanner from "../components/bot-training/AiConfigBanner.jsx";
-import ProductTable from "../components/bot-training/ProductTable.jsx";
-import ProductModal from "../components/bot-training/ProductModal.jsx";
-import BotConfigModal from "../components/bot-training/BotConfigModal.jsx";
+import AIConfigBanner from "../components/bot-training/AIConfigBanner";
+import ProductTable from "../components/bot-training/ProductTable";
+import ProductModal from "../components/bot-training/ProductModal";
+import BotConfigModal from "../components/bot-training/BotConfigModal";
 
 export default function BotTraining() {
   const [products, setProducts] = useState([]);
@@ -19,45 +19,78 @@ export default function BotTraining() {
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [search, setSearch] = useState("");
+  const [userOrgId, setUserOrgId] = useState(null);
   const { toast } = useToast();
 
-  
-  const [form, setForm] = useState({ name: "", price: "", description: "", stock_status: "in_stock", image_url: "" });
-  const [configForm, setConfigForm] = useState({ provider: "Groq Cloud", model: "llama-3.1-8b-instant", api_key: "", system_prompt: "" });
-  
-     // 1. Fetch Products from Supabase & Bot Config on load
+  const [form, setForm] = useState({
+    name: "",
+    price: "",
+    description: "",
+    stock_status: "in_stock",
+    image_url: "",
+  });
+
+  const [configForm, setConfigForm] = useState({
+    provider: "Groq Cloud",
+    model: "llama-3.1-8b-instant",
+    api_key: "",
+    system_prompt: "",
+  });
+
+  // 1. Fetch Products & Bot Config from Supabase on load
+   // 1. Fetch Products & Bot Config from Supabase on load
   useEffect(() => {
     async function fetchData() {
       try {
         setLoading(true);
 
-        // Fetch products directly from Supabase
-        const { data: supaProds, error } = await supabase.from("products").select("*");
-        if (error) {
-          console.error("Supabase Fetch Error:", error);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          setProducts([]);
+          setLoading(false);
+          return;
         }
+
+        // Fetch Organization ID
+        const { data: memberData } = await supabase
+          .from("organization_members")
+          .select("org_id")
+          .eq("user_id", user.id);
+
+        const currentOrgId = memberData && memberData.length > 0 ? memberData[0].org_id : null;
+        setUserOrgId(currentOrgId);
+
+        // BULLETPROOF FETCH LOGIC: Fetch by org_id OR user_id
+        let query = supabase.from("products").select("*");
+        if (currentOrgId) {
+          query = query.or(`org_id.eq.${currentOrgId},user_id.eq.${user.id}`);
+        } else {
+          query = query.eq("user_id", user.id);
+        }
+
+        const { data: supaProds, error: prodError } = await query;
+
+        if (prodError) {
+          console.error("Supabase Fetch Error:", prodError);
+        } else {
+          console.log("Successfully fetched products:", supaProds);
+        }
+
         setProducts(supaProds || []);
 
-          // Fetch Bot Config directly from Supabase table 'bot_configs'
-      const { data: configs, error: botErr } = await supabase
-        .from("bot_configs")
-        .select("*")
-        .limit(1);
-
-      if (configs && configs.length > 0) {
-        setBotConfig(configs[0]);
-        setConfigForm({
-          provider: configs[0].llm_provider || "Groq Cloud",
-          model: configs[0].model_name || "llama-3.1-8b-instant",
-          api_key: configs[0].api_key || "",
-          system_prompt: configs[0].system_prompt || "",
-        });
-      }
-
-
+        // Fetch Bot Config
+        const { data: configs } = await supabase.from("bot_configs").select("*").limit(1);
+        if (configs && configs.length > 0) {
+          setBotConfig(configs[0]);
+          setConfigForm({
+            provider: configs[0].llm_provider || "Groq Cloud",
+            model: configs[0].model_name || "llama-3.1-8b-instant",
+            api_key: configs[0].api_key || "",
+            system_prompt: configs[0].system_prompt || "",
+          });
+        }
       } catch (error) {
         console.error("BotTraining fetch error:", error);
-        setProducts([]);
       } finally {
         setLoading(false);
       }
@@ -66,56 +99,59 @@ export default function BotTraining() {
     fetchData();
   }, []);
 
-  // 2. Reset form helper
-  const resetForm = () => {
-    setForm({ name: "", price: "", description: "", stock_status: "in_stock", image_url: "" });
-    setEditingProduct(null);
-  };
-
-    // Unified Handle Save for ProductModal
-  const handleSaveProduct = async () => {
-    // 1. Validation
+    const handleSaveProduct = async () => {
     if (!form.name || !form.price) {
       toast({ title: "Name and Price are required", variant: "destructive" });
       return;
     }
 
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast({ title: "Please login first", variant: "destructive" });
+        return;
+      }
+
+      let activeOrgId = userOrgId;
+      if (!activeOrgId) {
+        const { data: memberData } = await supabase
+          .from("organization_members")
+          .select("org_id")
+          .eq("user_id", user.id);
+        if (memberData && memberData.length > 0) {
+          activeOrgId = memberData[0].org_id;
+          setUserOrgId(activeOrgId);
+        }
+      }
+
+      // PAYLOAD WITH BOTH ORG_ID AND USER_ID
+      const payload = {
+        name: form.name,
+        price: parseFloat(form.price) || 0,
+        description: form.description || "",
+        stock_status: form.stock_status || "in_stock",
+        image_url: form.image_url || "",
+        org_id: activeOrgId,
+        user_id: user.id // <-- This ensures it never gets lost!
+      };
+
       if (editingProduct) {
-        // UPDATE Existing Product in Supabase
         const { data, error } = await supabase
           .from("products")
-          .update({
-            name: form.name,
-            price: parseFloat(form.price) || 0,
-            description: form.description || "",
-            stock_status: form.stock_status || "in_stock",
-            image_url: form.image_url || "",
-          })
+          .update(payload)
           .eq("id", editingProduct.id)
           .select();
 
         if (error) throw error;
-
         setProducts((prev) => prev.map((p) => (p.id === editingProduct.id ? data[0] : p)));
         toast({ title: "Product updated successfully!" });
       } else {
-        // INSERT New Product into Supabase
         const { data, error } = await supabase
           .from("products")
-          .insert([
-            {
-              name: form.name,
-              price: parseFloat(form.price) || 0,
-              description: form.description || "",
-              stock_status: form.stock_status || "in_stock",
-              image_url: form.image_url || "",
-            }
-          ])
+          .insert([payload])
           .select();
 
         if (error) throw error;
-
         setProducts((prev) => [...prev, data[0]]);
         toast({ title: "Product added to Supabase!" });
       }
@@ -123,7 +159,7 @@ export default function BotTraining() {
       setShowModal(false);
       resetForm();
     } catch (error) {
-      console.error("Error saving product to Supabase:", error);
+      console.error("Error saving product:", error);
       toast({
         title: "Failed to save product",
         description: error.message || "Database error",
@@ -134,9 +170,13 @@ export default function BotTraining() {
 
 
   const handleDelete = async (id) => {
-    await Grow.entities.Product.delete(id);
-    setProducts((prev) => prev.filter((p) => p.id !== id));
-    toast({ title: "Product deleted" });
+    try {
+      await Grow.entities.Product.delete(id);
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      toast({ title: "Product deleted" });
+    } catch (err) {
+      console.error("Delete error:", err);
+    }
   };
 
   const handleEdit = (product) => {
@@ -151,13 +191,14 @@ export default function BotTraining() {
     setShowModal(true);
   };
 
-    const handleSaveConfig = async () => {
+  const handleSaveConfig = async () => {
     try {
       const payload = {
         llm_provider: configForm.provider,
         model_name: configForm.model,
         api_key: configForm.api_key,
-        system_prompt: configForm.system_prompt
+        system_prompt: configForm.system_prompt,
+        org_id: userOrgId,
       };
 
       if (botConfig && botConfig.id) {
@@ -188,31 +229,52 @@ export default function BotTraining() {
       toast({
         title: "Failed to save configuration",
         description: error.message || "Database error",
-        variant: "destructive"
+        variant: "destructive",
       });
     }
   };
 
   return (
-    <div className="p-8">
+    <div className="p-6 space-y-6">
       {/* Top Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Bot Training & Inventory</h1>
-          <p className="text-slate-500 mt-1">Manage products and configure your AI bot</p>
+          <p className="text-sm text-slate-400 mt-1">
+            Manage products and configure your AI bot
+          </p>
         </div>
-        <div className="flex gap-3">
-          <Button onClick={() => setShowConfigModal(true)} variant="outline" className="gap-2 border-white/10 text-slate-300 hover:bg-white/5">
+                <div className="flex gap-3">
+          <Button 
+            onClick={() => setShowConfigModal(true)} 
+            variant="outline" 
+            className="gap-2 border-white/10 text-white hover:bg-white/5"
+          >
             <Settings2 className="w-4 h-4" /> Bot Config
           </Button>
-          <Button onClick={() => { resetForm(); setShowModal(true); }} className="gap-2 bg-teal-500 hover:bg-teal-600 text-black">
+          
+          <Button
+            onClick={() => {
+              // Clear input fields to prepare for adding a new product
+              setForm({
+                name: "",
+                price: "",
+                description: "",
+                stock_status: "in_stock",
+                image_url: "",
+              });
+              setEditingProduct(null); 
+              setShowModal(true);
+            }}
+            className="gap-2 bg-teal-500 hover:bg-teal-600 text-slate-950 font-medium"
+          >
             <Plus className="w-4 h-4" /> Add New Product
           </Button>
         </div>
       </div>
 
       {/* AI Config Banner Component */}
-      <AiConfigBanner model={configForm.model} apiKey={botConfig?.api_key} />
+      <AIConfigBanner model={configForm.model} apiKey={botConfig?.api_key} />
 
       {/* Product Table Component */}
       <ProductTable
@@ -234,13 +296,13 @@ export default function BotTraining() {
       />
 
       {/* Bot Config Modal Component */}
-       <BotConfigModal
-       open={showConfigModal}
-       onOpenChange={setShowConfigModal}
-       config={configForm}
-       onChange={setConfigForm}
-       onSaveSuccess={handleSaveConfig}  
-     />
+      <BotConfigModal
+        open={showConfigModal}
+        onOpenChange={setShowConfigModal}
+        config={configForm}
+        onChange={setConfigForm}
+        onSaveSuccess={handleSaveConfig}
+      />
     </div>
   );
 }
