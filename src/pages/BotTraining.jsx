@@ -169,15 +169,33 @@ export default function BotTraining() {
   };
 
 
-  const handleDelete = async (id) => {
+    const handleDelete = async (id) => {
     try {
-      await Grow.entities.Product.delete(id);
+      // Direct Supabase call with product id
+      const { error } = await supabase
+        .from("products")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+
+      // Update state to immediately reflect in UI
       setProducts((prev) => prev.filter((p) => p.id !== id));
-      toast({ title: "Product deleted" });
+
+      toast({
+        title: "Product Deleted",
+        description: "The item has been removed successfully.",
+      });
     } catch (err) {
-      console.error("Delete error:", err);
+      console.error("Delete Error:", err);
+      toast({
+        title: "Failed to delete",
+        description: err.message || "Could not delete product.",
+        variant: "destructive",
+      });
     }
   };
+
 
   const handleEdit = (product) => {
     setEditingProduct(product);
