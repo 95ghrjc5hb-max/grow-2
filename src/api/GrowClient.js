@@ -1,148 +1,167 @@
+import axios from "axios";
+
 /**
- * @file GrowClient.js
- * Advanced, Futuristic, and Secure API Client Layer
+ * GrowClient
+ * -----------
+ * Thin wrapper around axios for talking to the saas-backend API.
+ *
+ * NOTE: I don't have your existing GrowClient.js in context, so this file
+ * assumes the common shape (axios instance + bearer token from storage).
+ * If your real file already has a different auth mechanism (e.g. Supabase
+ * session, cookie-based auth), keep your existing `api` instance and just
+ * paste the `settings` object at the bottom into it.
  */
 
-const API_BASE_URL = 'http://localhost:5000/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1";
 
-class ApiClient {
-    constructor(baseURL) {
-    this.baseURL = baseURL;
-    // Base secure headers
-    this.defaultHeaders = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    };
-  }
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: { "Content-Type": "application/json" },
+});
 
-  /**
-   * Retrieves auth token centrally.
-   * For future highest-security upgrades, replace localStorage with HttpOnly cookies.
-   */
-  get _token() {
-    return localStorage.getItem('token');
-  }
+// Attach the auth token (and active workspace, if the user belongs to more
+// than one) to every outgoing request.
+// Attach the auth token...
+api.interceptors.request.use((config) => {
+  let token = null;
 
-  /**
-   * Core request handler with timeout and centralized error management
-   */
-  async request(endpoint, options = {}) {
-    const url = `${this.baseURL}${endpoint}`;
-    const headers = { ...this.defaultHeaders, ...options.headers };
+  // 1. Check for manually stored tokens
+  token = localStorage.getItem("token") || localStorage.getItem("grow_access_token");
 
-    if (this._token) {
-      headers['Authorization'] = `Bearer ${this._token}`;
-    }
-
-    // Advanced feature: Request Timeout Protection (10 seconds)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const config = {
-      ...options,
-      headers,
-      signal: controller.signal,
-    };
-
-    try {
-      const response = await fetch(url, config);
-      clearTimeout(timeoutId); // Clear timeout on successful reach
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          console.warn('[Security] Unauthorized: Token might be expired or invalid.');
-          // Future scope: trigger auto-logout event here
+  // 2. Automatically check for Supabase auth tokens if not found manually
+  if (!token) {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.includes('-auth-token')) {
+        try {
+          const sbData = JSON.parse(localStorage.getItem(key));
+          token = sbData?.access_token || sbData?.currentSession?.access_token;
+          break; // Stop loop once token is found
+        } catch (e) {
+          console.error("Error parsing Supabase token:", e);
         }
-        throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
       }
-
-      const data = await response.json();
-      return { success: true, data };
-
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        console.error(`[Timeout] API Request to ${endpoint} took too long and was aborted.`);
-      } else {
-        console.error(`[API Fetch Failed] Endpoint: ${endpoint} | Reason:`, error.message);
-      }
-      return { success: false, data: null, message: error.message };
     }
   }
 
-  // Futuristic HTTP Method Helpers
-  get(endpoint) {
-    return this.request(endpoint, { method: 'GET' });
+  // 3. Attach token to request headers if valid
+  if (token && token !== "undefined" && token !== "null") {
+    config.headers.Authorization = `Bearer ${token}`;
   }
 
-  post(endpoint, body) {
-    return this.request(endpoint, { method: 'POST', body: JSON.stringify(body) });
+  const workspaceId = localStorage.getItem("grow_active_workspace_id");
+  if (workspaceId) {
+    config.headers["X-Workspace-Id"] = workspaceId;
   }
 
-  patch(endpoint, body) {
-    return this.request(endpoint, { method: 'PATCH', body: JSON.stringify(body) });
+  return config;
+});
+
+
+
+// Normalize errors so components can rely on `err.message` +
+// `err.status` instead of digging into the axios error shape.
+api.interceptors.response.use(
+  (response) => response.data,
+  (error) => {
+    const status = error.response?.status;
+    const message = error.response?.data?.error || error.message || "Something went wrong";
+
+    if (status === 401) {
+      // Session expired / invalid token â€” force re-auth.
+      localStorage.removeItem("token");
+      window.dispatchEvent(new CustomEvent("grow:unauthorized"));
+    }
+
+    return Promise.reject({ status, message });
   }
-}
+);
 
-// Initialize the Singleton Client
-const client = new ApiClient(API_BASE_URL);
+/**
+ * All `/api/v1/settings/*` endpoints, grouped by section.
+ * Every component in components/settings/ talks to the backend only
+ * through this object â€” never calls axios directly.
+ */
+export const settings = {
+  // ---- General profile ----
+  getProfile: () => api.get("/settings/profile"),
+  updateProfile: (payload) => api.patch("/settings/profile", payload),
+  changePassword: (payload) => api.post("/settings/profile/password", payload),
+  toggle2FA: (enabled) => api.post("/settings/profile/2fa", { enabled }),
+  getSessions: () => api.get("/settings/profile/sessions"),
+  revokeSession: (sessionId) => api.delete(`/settings/profile/sessions/${sessionId}`),
 
-// Exporting the Grow Decoupling Object matching your architecture
+  // ---- Store / workspace ----
+  getWorkspace: () => api.get("/settings/workspace"),
+  updateWorkspace: (payload) => api.patch("/settings/workspace", payload),
+  getStoreConnection: () => api.get("/settings/workspace/store"),
+
+  // ---- AI agent guardrails ----
+  getAIAgentConfig: () => api.get("/settings/ai-agent"),
+  updateAIAgentConfig: (payload) => api.patch("/settings/ai-agent", payload),
+  getAvailableModels: () => api.get("/settings/ai-agent/models"),
+
+  // ---- Team & escalations ----
+  getTeamMembers: () => api.get("/settings/team"),
+  inviteTeamMember: (payload) => api.post("/settings/team/invite", payload),
+  updateTeamMember: (memberId, payload) => api.patch(`/settings/team/${memberId}`, payload),
+  removeTeamMember: (memberId) => api.delete(`/settings/team/${memberId}`),
+  getEscalationRules: () => api.get("/settings/team/escalation-rules"),
+  updateEscalationRules: (payload) => api.patch("/settings/team/escalation-rules", payload),
+
+  // ---- Integrations / channels ----
+  getIntegrations: () => api.get("/settings/integrations"),
+  connectIntegration: (provider, payload) => api.post(`/settings/integrations/${provider}/connect`, payload),
+  disconnectIntegration: (provider) => api.post(`/settings/integrations/${provider}/disconnect`),
+
+  // ---- Notifications ----
+  getNotificationSettings: () => api.get("/settings/notifications"),
+  updateNotificationSettings: (payload) => api.patch("/settings/notifications", payload),
+  testWebhook: (channel) => api.post("/settings/notifications/test", { channel }),
+
+  // ---- API keys & webhooks ----
+  getApiKeys: () => api.get("/settings/api-keys"),
+  createApiKey: (label) => api.post("/settings/api-keys", { label }),
+  revokeApiKey: (keyId) => api.delete(`/settings/api-keys/${keyId}`),
+  getWebhookLogs: (params) => api.get("/settings/api-keys/webhook-logs", { params }),
+
+  // ---- Billing & usage ----
+  getBillingUsage: () => api.get("/settings/billing"),
+  getInvoices: () => api.get("/settings/billing/invoices"),
+};
+
+// Backward compatibility for existing app components
 export const Grow = {
   auth: {
     login: async (email, password) => {
-      const response = await client.post('/auth/login', { email, password });
-      
-      if (response.success && response.data?.token) {
-        localStorage.setItem('token', response.data.token);
-        return response.data;
-      }
-      
-      return { success: false, error: 'Server connection offline or Invalid credentials' };
+      const res = await api.post('/auth/login', { email, password });
+   if (res?.token) {
+   localStorage.setItem('token', res.token); 
+   }
+      return res;
     },
-    
     signup: async (email, password) => {
-      const response = await client.post('/auth/signup', { email, password });
-      return response.success ? response.data : { success: false, error: 'Registration failed' };
+      return await api.post('/auth/signup', { email, password });
     }
   },
-  
-    entities: {
+  entities: {
     Conversation: {
-      list: async () => {
-        const response = await client.get('/conversations');
-        // Fallback to empty array to strictly prevent UI crashes like reading 'list' of undefined
-        return response.success ? response.data : [];
-      },
-      update: async (id, payload) => {
-        const response = await client.patch(`/conversations/${id}`, payload);
-        return response.success ? response.data : { success: false };
-      }
+      list: () => api.get('/conversations'),
+      update: (id, payload) => api.patch(`/conversations/${id}`, payload)
     },
     Orders: {
-      list: async () => {
-        const response = await client.get('/orders');
-        return response.success ? response.data : [];
-      }
+      list: () => api.get('/orders')
     },
     Channel: {
-      list: async () => {
-        const response = await client.get('/channels');
-        return response.success ? response.data : [];
-      }
-    },
-    BotConfig: {
-      list: async () => {
-        const response = await client.get('/bot-config');
-        return response.success ? response.data : [];
-      },
-      create: async (payload) => {
-        const response = await client.post('/bot-config', payload);
-        return response.success ? response.data : null;
-      },
-      update: async (id, payload) => {
-        const response = await client.patch(`/bot-config/${id}`, payload);
-        return response.success ? response.data : null;
-      }
+      list: () => api.get('/channels')
     }
+  },
+  BotConfig: {
+    list: () => api.get('/bot-config'),
+    create: (payload) => api.post('/bot-config', payload),
+    update: (id, payload) => api.patch(`/bot-config/${id}`, payload)
   }
 };
+
+
+export default api;

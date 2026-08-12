@@ -1,13 +1,14 @@
 import supabase from '../config/supabase.js';
 
-// 1. Get all integrations for logged in user
+// 1. Get all integrations for logged in organization/workspace
 export const getIntegrations = async (req, res) => {
   try {
-    const userId = req.user?.id;
+    const orgId = req.user?.org_id; 
+    
     const { data, error } = await supabase
       .from('integrations')
       .select('*')
-      .eq('user_id', userId);
+      .eq('org_id', orgId);
 
     if (error) throw error;
 
@@ -28,18 +29,18 @@ export const getIntegrations = async (req, res) => {
 // 2. Connect WhatsApp integration
 export const connectWhatsApp = async (req, res) => {
   try {
-    const userId = req.user?.id;
+    const orgId = req.user?.org_id;
     const { phoneNumber, apiKey } = req.body;
 
     const { data, error } = await supabase
       .from('integrations')
       .upsert({
-        user_id: userId,
+        org_id: orgId,
         platform: 'whatsapp',
         status: 'connected',
         credentials: { phoneNumber, apiKey },
         updated_at: new Date()
-      }, { onConflict: 'user_id, platform' });
+      }, { onConflict: 'org_id, platform' });
 
     if (error) throw error;
 
@@ -58,7 +59,7 @@ export const connectWhatsApp = async (req, res) => {
 export const disconnectIntegration = async (req, res) => {
   try {
     const { platform } = req.body;
-    const userId = req.user?.id;
+    const orgId = req.user?.org_id;
 
     if (!platform) {
       return res.status(400).json({ error: "Platform name is required" });
@@ -67,7 +68,7 @@ export const disconnectIntegration = async (req, res) => {
     const { error } = await supabase
       .from('integrations')
       .delete()
-      .eq('user_id', userId)
+      .eq('org_id', orgId)
       .eq('platform', platform);
 
     if (error) throw error;

@@ -1,12 +1,12 @@
 import axios from 'axios';
 import { supabase } from '../config/supabase.js';
 
-const GRAPH_API_URL = 'https://graph.facebook.com/v18.0';
+const GRAPH_API_URL = "https://graph.facebook.com/v18.0";
 
 /**
  * Exchange Meta OAuth Code for a Long-Lived Access Token and Save Page Credentials
  */
-export const handleMetaOAuthExchange = async (code, storeId) => {
+export const exchangeMetaCode = async (code, storeId) => {
   try {
     // 1. Exchange authorization code for short-lived user access token
     const tokenResponse = await axios.get(`${GRAPH_API_URL}/oauth/access_token`, {

@@ -15,6 +15,8 @@ import { createClient } from '@supabase/supabase-js';
 import orderRoutes from './routes/orderRoutes.js';
 import integrationRoutes from './routes/integrationRoutes.js';
 
+import settingsRoutes from './routes/settingsRoutes.js';
+
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -419,6 +421,8 @@ app.use('/api/integrations', integrationRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 
+app.use('/api/v1/settings', settingsRoutes);
+
 // Any request that doesn't match the API routes will load the frontend
 app.get(/(.*)/, (req, res) => {
   if (req.path.startsWith('/api')) {
@@ -433,4 +437,12 @@ app.get(/(.*)/, (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 [CORE] Dedicated Independent Server processing core live on port ${PORT}`);
   console.log(`🛡️  [SECURITY] Helmet & Rate Limiting Active`);
+});
+app.use((err, req, res, next) => {
+  console.error(err);
+  const status = err.status || 500;
+  res.status(status).json({
+    success: false,
+    error: status === 500 ? 'Internal server error' : err.message,
+  });
 });
