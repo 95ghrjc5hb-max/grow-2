@@ -10,6 +10,6 @@ const router = express.Router();
 
 router.get('/', authenticateToken, getIntegrations);
 router.post('/whatsapp', authenticateToken, connectWhatsApp);
-router.post('/disconnect', authenticateToken, disconnectIntegration);
+router.delete('/:platform', authenticateToken, disconnectIntegration);
 
 export default router;

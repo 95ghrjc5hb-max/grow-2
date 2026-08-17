@@ -1,9 +1,9 @@
 import express from 'express';
-import { verifyWebhook, handleIncomingWebhook } from '../controllers/webhookController.js';
+import { verifyMetaWebhook, handleMetaWebhook } from '../controllers/webhookController.js';
 
 const router = express.Router();
 
-router.get('/', verifyWebhook);
-router.post('/', handleIncomingWebhook);
+router.get('/messenger', verifyMetaWebhook);
+router.post('/messenger', handleMetaWebhook);
 
 export default router;

@@ -3,7 +3,8 @@ import supabase from '../config/supabase.js';
 // 1. Get all integrations for logged in organization/workspace
 export const getIntegrations = async (req, res) => {
   try {
-    const orgId = req.user?.org_id; 
+    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
+if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
     
     const { data, error } = await supabase
       .from('integrations')
@@ -29,7 +30,8 @@ export const getIntegrations = async (req, res) => {
 // 2. Connect WhatsApp integration
 export const connectWhatsApp = async (req, res) => {
   try {
-    const orgId = req.user?.org_id;
+    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
+if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
     const { phoneNumber, apiKey } = req.body;
 
     const { data, error } = await supabase
@@ -58,8 +60,10 @@ export const connectWhatsApp = async (req, res) => {
 // 3. Disconnect integration
 export const disconnectIntegration = async (req, res) => {
   try {
-    const { platform } = req.body;
-    const orgId = req.user?.org_id;
+  const { platform } = req.params;
+const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
+if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
+  
 
     if (!platform) {
       return res.status(400).json({ error: "Platform name is required" });

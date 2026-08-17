@@ -61,26 +61,72 @@ export const exchangeMetaCode = async (code, storeId) => {
     throw new Error('Failed to complete Meta authentication');
   }
 };
-
-/**
- * Send Message to Messenger or Instagram via Meta Graph API
- */
-export const sendMetaReply = async (pageAccessToken, recipientId, messageText) => {
+// Send Message to Messenger or Instagram via Meta Graph API
+export const sendMetaReply = async (pageAccessToken, pageId, recipientId, messageText) => {
   try {
-    const response = await axios.post(
-      `${GRAPH_API_URL}/me/messages`,
-      {
-        recipient: { id: recipientId },
-        message: { text: messageText },
-        messaging_type: 'RESPONSE'
-      },
-      {
-        params: { access_token: pageAccessToken }
-      }
-    );
+    const url = `${GRAPH_API_URL}/me/messages`;
+
+    const payload = {
+      recipient: { id: recipientId },
+      message: { text: messageText }
+    };
+
+    const response = await axios.post(url, payload, {
+      params: { access_token: pageAccessToken }
+    });
+
+    console.log('[META GRAPH API SUCCESS]:', response.data);
     return response.data;
   } catch (error) {
-    console.error('[META SEND MESSAGE ERROR]:', error?.response?.data || error.message);
+    console.error('[META GRAPH API ERROR]:', error?.response?.data || error.message);
+    throw error;
+  }
+};
+// Automatically subscribe Facebook Page & Instagram to Webhook events
+export const subscribeAppToPage = async (pageAccessToken, pageId) => {
+  try {
+    const response = await axios.post(
+      `${GRAPH_API_URL}/${pageId}/subscribed_apps`,
+      {},
+      {
+        params: {
+          subscribed_fields: 'messages,messaging_postbacks,message_reactions',
+          access_token: pageAccessToken
+        }
+      }
+    );
+    console.log(`[META SUBSCRIBED SUCCESS]: Page ${pageId} subscribed to webhooks!`, response.data);
+  } catch (error) {
+    console.error('[META SUBSCRIBED ERROR]:', error?.response?.data || error.message);
+  }
+};
+// Send WhatsApp Message via Meta Cloud API
+export const sendWhatsAppReply = async (accessToken, phoneNumberId, recipientPhone, messageText) => {
+  try {
+    const url = `${GRAPH_API_URL}/${phoneNumberId}/messages`;
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: recipientPhone,
+      type: 'text',
+      text: {
+        preview_url: false,
+        body: messageText
+      }
+    };
+
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    console.log('[WHATSAPP API SUCCESS]:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('[WHATSAPP API ERROR]:', error?.response?.data || error.message);
     throw error;
   }
 };

@@ -15,19 +15,61 @@ export default function OrderManagement() {
   const [editForm, setEditForm] = useState({});
   const { toast } = useToast();
 
-  // Fetch orders from YOUR own backend server
+  // 🛡️ SECURITY: Smart Extractor for Supabase Token
+  const getTokenAndOrgId = () => {
+    let token = "";
+    let myOrgId = null;
+
+    // Loop through Local Storage to find the Supabase auth key dynamically
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+        try {
+          const sessionData = JSON.parse(localStorage.getItem(key));
+          token = sessionData.access_token || "";
+          myOrgId = sessionData.user?.id || null;
+          break; // Found it, stop looping
+        } catch (e) {
+          console.error("Failed to parse Supabase session data");
+        }
+      }
+    }
+    return { token, myOrgId };
+  };
+
   useEffect(() => {
     async function loadOrders() {
       try {
         setLoading(true);
-        // Direct call to your independent node server endpoint
-        const response = await axios.get("http://localhost:5000/api/v1/orders");
-        if (response.data && response.data.data) {
-          setOrders(response.data.data.orders || []);
+        const { token, myOrgId } = getTokenAndOrgId();
+        
+        // Add Authorization header for backend verification
+        const config = {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        };
+
+        const response = await axios.get("http://localhost:5000/api/v1/orders", config);
+        
+        let fetchedData = [];
+        if (Array.isArray(response.data)) {
+          fetchedData = response.data;
+        } else if (response.data?.data && Array.isArray(response.data.data)) {
+          fetchedData = response.data.data;
+        } else if (response.data?.data?.orders && Array.isArray(response.data.data.orders)) {
+          fetchedData = response.data.data.orders;
+        } else if (response.data?.orders && Array.isArray(response.data.orders)) {
+          fetchedData = response.data.orders;
         }
+
+        // 🔥 MULTI-TENANCY FILTER
+        if (myOrgId) {
+          fetchedData = fetchedData.filter(order => order.org_id === myOrgId);
+        }
+
+        setOrders(fetchedData);
+        
       } catch (error) {
-        console.error("Order load error from your server:", error);
-        // Fallback placeholder data during development so your UI doesn't look empty
+        console.error("Order load error from your servers", error);
         setOrders([]);
       } finally {
         setLoading(false);
@@ -39,15 +81,19 @@ export default function OrderManagement() {
   const filtered = (orders || []).filter(o => {
     if (!search) return true;
     const s = search.toLowerCase();
-    return o.customer_name?.toLowerCase().includes(s) || o.order_id?.toLowerCase().includes(s) || o.product_name?.toLowerCase().includes(s);
+    return o.customer_name?.toLowerCase().includes(s) || 
+           o.order_id?.toLowerCase().includes(s) || 
+           o.products?.toLowerCase().includes(s);
   });
 
   const handleConfirm = async (order) => {
     try {
-      // Direct update to your backend database
-      await axios.patch(`http://localhost:5000/api/v1/orders/${order.id}`, { status: "confirmed" });
+      const { token } = getTokenAndOrgId();
+      await axios.patch(`http://localhost:5000/api/v1/orders/${order.id}`, { status: "confirmed" }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "confirmed" } : o));
-      toast({ title: `Order ${order.order_id} confirmed on your server` });
+      toast({ title: `Order confirmed on your server` });
     } catch (e) {
       toast({ title: "Failed to update status on server", variant: "destructive" });
     }
@@ -55,10 +101,12 @@ export default function OrderManagement() {
 
   const handleCancel = async (order) => {
     try {
-      // Direct update to your backend database
-      await axios.patch(`http://localhost:5000/api/v1/orders/${order.id}`, { status: "cancelled" });
+      const { token } = getTokenAndOrgId();
+      await axios.patch(`http://localhost:5000/api/v1/orders/${order.id}`, { status: "cancelled" }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "cancelled" } : o));
-      toast({ title: `Order ${order.order_id} cancelled on your server` });
+      toast({ title: `Order cancelled on your server` });
     } catch (e) {
       toast({ title: "Failed to cancel order on server", variant: "destructive" });
     }
@@ -68,18 +116,20 @@ export default function OrderManagement() {
     setEditOrder(order);
     setEditForm({
       customer_name: order.customer_name || "",
-      phone: order.phone || "",
+      customer_phone: order.customer_phone || "",
       address: order.address || "",
-      product_name: order.product_name || "",
-      total_price: String(order.total_price || ""),
+      products: order.products || "",
+      total_amount: String(order.total_amount || ""),
     });
   };
 
   const handleEditSave = async () => {
     try {
-      const data = { ...editForm, total_price: parseFloat(editForm.total_price) || 0 };
-      // Direct update to your backend database
-      await axios.put(`http://localhost:5000/api/v1/orders/${editOrder.id}`, data);
+      const { token } = getTokenAndOrgId();
+      const data = { ...editForm, total_amount: parseFloat(editForm.total_amount) || 0 };
+      await axios.put(`http://localhost:5000/api/v1/orders/${editOrder.id}`, data, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       setOrders(prev => prev.map(o => o.id === editOrder.id ? { ...o, ...data } : o));
       setEditOrder(null);
       toast({ title: "Order updated directly in your database" });
@@ -120,14 +170,19 @@ export default function OrderManagement() {
 
       <div className="relative mb-5 max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name, order ID, or product..." className="pl-9 bg-white/5 border-white/10" />
+        <Input 
+          value={search} 
+          onChange={(e) => setSearch(e.target.value)} 
+          placeholder="Search by name, order ID, or product..." 
+          className="pl-10 bg-white/5 border-white/10 text-white placeholder:text-slate-500" 
+        />
       </div>
 
-      <div className="rounded-xl border border-border overflow-hidden">
+      <div className="rounded-xl border border-white/10 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="bg-white/[0.02] border-b border-border">
+              <tr className="bg-white/[0.02] border-b border-white/10 text-left">
                 <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Order ID</th>
                 <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Customer</th>
                 <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Phone</th>
@@ -149,30 +204,30 @@ export default function OrderManagement() {
               ) : (
                 filtered.map(order => (
                   <tr key={order.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
-                    <td className="p-4 text-sm font-mono text-teal-400">{order.order_id}</td>
+                    <td className="p-4 text-sm font-mono text-teal-400">{order.order_id || 'N/A'}</td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">
                         {order.channel && <ChannelIcon channel={order.channel} />}
                         <span className="text-sm text-white">{order.customer_name}</span>
                       </div>
                     </td>
-                    <td className="p-4 text-sm text-slate-400">{order.phone || "—"}</td>
-                    <td className="p-4 text-sm text-slate-400 max-w-[180px] truncate">{order.address || "—"}</td>
-                    <td className="p-4 text-sm text-slate-300">{order.product_name}</td>
-                    <td className="p-4 text-sm font-semibold text-teal-400">৳{order.total_price?.toLocaleString()}</td>
+                    <td className="p-4 text-sm text-slate-400">{order.customer_phone || "-"}</td>
+                    <td className="p-4 text-sm text-slate-400 max-w-[180px] truncate">{order.address || "-"}</td>
+                    <td className="p-4 text-sm text-slate-300">{order.products || "-"}</td>
+                    <td className="p-4 text-sm font-semibold text-teal-400">৳{Number(order.total_amount || 0).toLocaleString()}</td>
                     <td className="p-4">{statusBadge(order.status)}</td>
                     <td className="p-4">
                       <div className="flex items-center justify-end gap-1">
                         {order.status === "pending" && (
-                          <button onClick={() => handleConfirm(order)} className="p-2 rounded-lg hover:bg-green-500/10 text-slate-400 hover:text-green-400 transition-colors" title="Confirm">
+                          <button onClick={() => handleConfirm(order)} className="p-2 rounded-lg hover:bg-green-500/10 text-slate-400 hover:text-green-400 transition-colors">
                             <Check className="w-4 h-4" />
                           </button>
                         )}
-                        <button onClick={() => handleEditOpen(order)} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors" title="Edit">
+                        <button onClick={() => handleEditOpen(order)} className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors">
                           <Pencil className="w-4 h-4" />
                         </button>
                         {order.status !== "cancelled" && (
-                          <button onClick={() => handleCancel(order)} className="p-2 rounded-lg hover:bg-red-500/10 text-slate-400 hover:text-red-400 transition-colors" title="Cancel">
+                          <button onClick={() => handleCancel(order)} className="p-2 rounded-lg hover:bg-red-500/10 text-slate-400 hover:text-red-400 transition-colors">
                             <X className="w-4 h-4" />
                           </button>
                         )}
@@ -186,40 +241,38 @@ export default function OrderManagement() {
         </div>
       </div>
 
-      <Dialog open={!!editOrder} onOpenChange={v => !v && setEditOrder(null)}>
-        <DialogContent className="bg-card border-border max-w-lg">
+      <Dialog open={!!editOrder} onOpenChange={(v) => !v && setEditOrder(null)}>
+        <DialogContent className="bg-slate-900 border-white/10 text-white">
           <DialogHeader>
-            <DialogTitle className="text-white">Edit Order — {editOrder?.order_id}</DialogTitle>
+            <DialogTitle className="text-white">Edit Order - {editOrder?.order_id || 'N/A'}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
+          <div className="space-y-4 pt-4">
             <div>
               <label className="text-xs text-slate-500 mb-1.5 block">Customer Name</label>
-              <Input value={editForm.customer_name} onChange={e => setEditForm({ ...editForm, customer_name: e.target.value })} className="bg-white/5 border-white/10" />
+              <Input value={editForm.customer_name} onChange={e => setEditForm({...editForm, customer_name: e.target.value})} className="bg-white/5 border-white/10 text-white" />
             </div>
             <div>
               <label className="text-xs text-slate-500 mb-1.5 block">Phone Number</label>
-              <Input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className="bg-white/5 border-white/10" />
+              <Input value={editForm.customer_phone} onChange={e => setEditForm({...editForm, customer_phone: e.target.value})} className="bg-white/5 border-white/10 text-white" />
             </div>
             <div>
               <label className="text-xs text-slate-500 mb-1.5 block">Shipping Address</label>
-              <Input value={editForm.address} onChange={e => setEditForm({ ...editForm, address: e.target.value })} className="bg-white/5 border-white/10" />
+              <Input value={editForm.address} onChange={e => setEditForm({...editForm, address: e.target.value})} className="bg-white/5 border-white/10 text-white" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-xs text-slate-500 mb-1.5 block">Product</label>
-                <Input value={editForm.product_name} onChange={e => setEditForm({ ...editForm, product_name: e.target.value })} className="bg-white/5 border-white/10" />
+                <Input value={editForm.products} onChange={e => setEditForm({...editForm, products: e.target.value})} className="bg-white/5 border-white/10 text-white" />
               </div>
               <div>
-                <label className="text-xs text-slate-500 mb-1.5 block">Total (BDT)</label>
-                <Input type="number" value={editForm.total_price} onChange={e => setEditForm({ ...editForm, total_price: e.target.value })} className="bg-white/5 border-white/10" />
+                <label className="text-xs text-slate-500 mb-1.5 block">Total Price (৳)</label>
+                <Input value={editForm.total_amount} type="number" onChange={e => setEditForm({...editForm, total_amount: e.target.value})} className="bg-white/5 border-white/10 text-white" />
               </div>
             </div>
-            <div className="flex justify-end gap-3 pt-2">
-              <Button variant="outline" onClick={() => setEditOrder(null)} className="border-white/10 text-slate-300">Cancel</Button>
-              <Button onClick={handleEditSave} className="bg-teal-500 hover:bg-teal-600 text-black gap-2">
-                <Save className="w-4 h-4" /> Save Changes
-              </Button>
-            </div>
+            <Button onClick={handleEditSave} className="w-full bg-teal-500 hover:bg-teal-600 text-white mt-4">
+              <Save className="w-4 h-4 mr-2" />
+              Save Changes
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

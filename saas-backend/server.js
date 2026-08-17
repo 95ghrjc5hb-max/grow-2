@@ -14,9 +14,9 @@ import dashboardRoutes from './routes/dashboardRoutes.js';
 import { createClient } from '@supabase/supabase-js';
 import orderRoutes from './routes/orderRoutes.js';
 import integrationRoutes from './routes/integrationRoutes.js';
-
+import webhookRoutes from './routes/webhookRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
-
+import authRoutes from './routes/authRoutes.js';
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,7 +53,12 @@ app.use(cors({
 // 2. Security headers (Placed after CORS)
 app.use(helmet());
 
-app.use(express.json({ limit: '10kb' })); 
+app.use(express.json({ 
+  limit: '10kb',
+  verify: (req, res, buf) => { 
+    req.rawBody = buf; 
+  } 
+}));
 app.use(morgan('dev')); 
 
 const limiter = rateLimit({
@@ -415,9 +420,10 @@ app.get('/api/conversations', authenticateToken, async (req, res) => {
     });
   }
 });
-
+app.use('/api/auth', authRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/integrations', integrationRoutes);
+app.use('/api/v1/webhooks', webhookRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 

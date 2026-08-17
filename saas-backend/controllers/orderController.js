@@ -3,10 +3,10 @@ import supabase from '../config/supabase.js';
 // Get all orders belonging ONLY to the logged-in user
 export const getOrders = async (req, res) => {
   try {
-    // 1. Safe extraction of userId
-    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+    // 1. Safe extraction of userId (Token payload fallback added)
+    const userId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.user_id;
 
-    // 2. ⚠️ Safety Check: userId না থাকলে ডাটাবেজে রিকোয়েস্ট না পাঠিয়ে এখানেই আটকে দেওয়া
+    // 2. ⚠️ Safety Check: userId না থাকলে ডাটাবেজে রিকোয়েস্ট না পাঠিয়ে এখানেই আটকে দেওয়া
     if (!userId || userId === 'undefined') {
       return res.status(200).json({
         success: true,
@@ -16,10 +16,11 @@ export const getOrders = async (req, res) => {
     }
 
     // 3. Query Supabase Database
+    // 🔥 FIXED: Changed 'user_id' to 'org_id' to match your Database schema exactly
     const { data: orders, error } = await supabase
       .from('orders')
       .select('*')
-      .eq('user_id', userId)
+      .eq('org_id', userId)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -42,7 +43,7 @@ export const updateOrderStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+    const userId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.user_id;
 
     if (!userId || userId === 'undefined') {
       return res.status(401).json({
@@ -51,11 +52,12 @@ export const updateOrderStatus = async (req, res) => {
       });
     }
 
+    // 🔥 FIXED: Changed 'user_id' to 'org_id' for strict multi-tenant isolation
     const { data, error } = await supabase
       .from('orders')
       .update({ status })
       .eq('id', id)
-      .eq('user_id', userId)
+      .eq('org_id', userId)
       .select();
 
     if (error) throw error;

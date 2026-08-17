@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
-import { supabase } from "../supabaseClient";
+
 const platforms = [
   {
     key: "messenger",
@@ -49,7 +49,7 @@ const platforms = [
     border: "border-slate-800",
     text: "text-emerald-400",
     btn: "bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-sm",
-  },
+  }
 ];
 
 export default function Integrations() {
@@ -67,18 +67,41 @@ export default function Integrations() {
     accessToken: ""
   });
 
+  // 🛡️ ARCHITECTURE: Defensive Supabase Token Extractor
+  const getTokenAndOrgId = () => {
+    let token = "";
+    let myOrgId = null;
+
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+          const sessionData = JSON.parse(localStorage.getItem(key));
+          token = sessionData.access_token || "";
+          myOrgId = sessionData.user?.id || null;
+          break; 
+        }
+      }
+    } catch (e) {
+      console.error("[SECURITY ERROR]: Failed to parse session data", e);
+    }
+    return { token, myOrgId };
+  };
+
   useEffect(() => {
     fetchActiveIntegrations();
   }, []);
 
-    // Safe API Fetching Handler with User Auth Token
+  // 🔄 LOGIC: Fetch integrations with strict Auth verification
   const fetchActiveIntegrations = async () => {
     try {
       setLoading(true);
+      const { token } = getTokenAndOrgId();
 
-      // Get active user token from Supabase Auth
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      if (!token) {
+        setChannels([]);
+        return;
+      }
 
       const res = await fetch("/api/integrations", {
         headers: {
@@ -87,36 +110,47 @@ export default function Integrations() {
         }
       });
 
+      if (!res.ok) throw new Error("API response was not ok");
       const result = await res.json();
 
-      // Safely extract array regardless of backend response structure
-      const channelList = Array.isArray(result)
-        ? result
-        : (result.data || result.integrations || []);
-
+      const channelList = Array.isArray(result) ? result : (result.data || result.integrations || []);
       setChannels(channelList);
     } catch (error) {
-      console.error("Failed to load integrations", error);
-      setChannels([]); // Default to empty array on error
+      console.error("[FETCH ERROR]:", error);
+      setChannels([]); 
     } finally {
       setLoading(false);
     }
   };
 
-  // Safe array finder method
   const getChannel = (platform) => {
     if (!Array.isArray(channels)) return null;
     return channels.find((c) => c.platform === platform);
   };
 
+  // 🔗 LOGIC: Secure Meta OAuth Flow with Dynamic Scopes
   const handleMetaOAuth = (platformKey) => {
+    const { token } = getTokenAndOrgId();
+    if (!token) {
+      toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
+      return;
+    }
+
     const appId = import.meta.env.VITE_META_APP_ID || "YOUR_META_APP_ID";
     const redirectUri = `${window.location.origin}/api/auth/meta/callback`;
-    const scope = "pages_show_list,pages_messaging,instagram_basic,instagram_manage_messages,pages_read_engagement";
     
-    const oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&response_type=code&state=${platformKey}`;
+    // 🔥 DYNAMIC SCOPE LOGIC (আপনার বলা লজিক অনুযায়ী)
+    let scope = "";
+    if (platformKey === "messenger") {
+      scope = "pages_show_list,pages_messaging"; 
+    } else if (platformKey === "instagram") {
+      scope = "pages_show_list,instagram_basic,instagram_manage_messages,pages_read_engagement";
+    }
     
-    window.open(oauthUrl, "Connect with Meta", "width=600,height=650,status=yes,resizable=yes");
+    const customState = encodeURIComponent(`${platformKey}___${token}`);
+  const oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${customState}&config_id=1389130196651056&response_type=code`;
+    
+    const popup = window.open(oauthUrl, "Connect with Meta", "width=600,height=650,status=yes,resizable=yes");
 
     const handlePopupMessage = async (event) => {
       if (event.origin !== window.location.origin) return;
@@ -129,11 +163,25 @@ export default function Integrations() {
     };
     
     window.addEventListener("message", handlePopupMessage);
+
+    const timer = setInterval(() => {
+      if (popup && popup.closed) {
+        clearInterval(timer);
+        window.removeEventListener("message", handlePopupMessage);
+      }
+    }, 1000);
   };
 
   const handleDisconnect = async (platformKey) => {
     try {
-      await fetch(`/api/integrations/${platformKey}`, { method: "DELETE" });
+      const { token } = getTokenAndOrgId();
+      const res = await fetch(`/api/integrations/${platformKey}`, { 
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+
+      if (!res.ok) throw new Error("Failed to disconnect");
+      
       toast({ title: `${platformKey} disconnected successfully.` });
       fetchActiveIntegrations();
     } catch (error) {
@@ -141,81 +189,60 @@ export default function Integrations() {
     }
   };
 
- const handleConnectClick = (platformKey) => {
-  const existing = getChannel(platformKey);
-  if (existing && existing.status === "connected") {
-    handleDisconnect(platformKey);
-    return;
-  }
+  const handleConnectClick = (platformKey) => {
+    const existing = getChannel(platformKey);
+    if (existing && existing.status === "connected") {
+      handleDisconnect(platformKey);
+      return;
+    }
 
-  if (platformKey === "whatsapp") {
-    setShowWhatsAppModal(true);
-  } else if (platformKey === "shopify") {
-    setShowShopifyModal(true);
-  } else {
-    handleMetaOAuth(platformKey);
-  }
-};
+    if (platformKey === "whatsapp") setShowWhatsAppModal(true);
+    else if (platformKey === "shopify") setShowShopifyModal(true);
+    else handleMetaOAuth(platformKey);
+  };
 
-// Handle WhatsApp Form Submission with Auth Header
-const handleWhatsAppSubmit = async (e) => {
-  e.preventDefault();
-  try {
-    // Retrieve session token for authenticated backend request
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
+  // 📱 LOGIC: WhatsApp Manual Credential Submission
+  const handleWhatsAppSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const { token } = getTokenAndOrgId();
 
-    const res = await fetch("/api/integrations/whatsapp", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      },
-      body: JSON.stringify(waCredentials),
-    });
+      const res = await fetch("/api/integrations/whatsapp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify(waCredentials),
+      });
 
-    if (res.ok) {
+      if (!res.ok) throw new Error("Failed to connect WhatsApp");
+
       toast({ title: "WhatsApp Business API connected successfully!" });
       setShowWhatsAppModal(false);
-      setWaCredentials({
-        phoneNumber: "",
-        phoneNumberId: "",
-        businessAccountId: "",
-        accessToken: ""
-      });
+      setWaCredentials({ phoneNumber: "", phoneNumberId: "", businessAccountId: "", accessToken: "" });
       fetchActiveIntegrations();
-    } else {
-      throw new Error("Failed to connect WhatsApp");
+    } catch (error) {
+      toast({ title: "Failed to connect WhatsApp. Verify credentials.", variant: "destructive" });
     }
-  } catch (error) {
-    toast({
-      title: "Failed to connect WhatsApp. Verify credentials.",
-      variant: "destructive"
-    });
-  }
-};
-  
-// Shopify Submit Handler
-const handleShopifySubmit = (e) => {
-  e.preventDefault();
+  };
+    
+  // 🛍️ LOGIC: Secure Shopify OAuth Redirect
+  const handleShopifySubmit = (e) => {
+    e.preventDefault();
+    if (!shopifyDomain) return;
 
-  if (!shopifyDomain) return;
+    let cleanDomain = shopifyDomain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');       
+    if (!cleanDomain.includes('.')) cleanDomain += '.myshopify.com';
 
-  // 1. Clean the domain input (remove http/https and trailing slashes)
-  let cleanDomain = shopifyDomain
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, '') // Remove http:// or https://
-    .replace(/\/.*$/, '');       // Remove slashes at the end
+    const { token } = getTokenAndOrgId();
+    if (!token) {
+      toast({ title: "Authentication error", variant: "destructive" });
+      return;
+    }
 
-  // 2. Automatically append .myshopify.com if missing
-  if (!cleanDomain.includes('.')) {
-    cleanDomain += '.myshopify.com';
-  }
-
-  // 3. Redirect browser to backend Shopify OAuth endpoint
-  window.location.href = `/api/auth/shopify?shop=${cleanDomain}`;
-};
+    window.location.href = `/api/auth/shopify?shop=${cleanDomain}&token=${encodeURIComponent(token)}`;
+  };
 
   if (loading) {
     return (
@@ -245,15 +272,7 @@ const handleShopifySubmit = (e) => {
                   <Icon className={`w-7 h-7 ${p.text}`} />
                 </div>
                 <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium ${connected ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
-                  {connected ? (
-                    <>
-                      <Wifi className="w-3 h-3" /> Connected
-                    </>
-                  ) : (
-                    <>
-                      <WifiOff className="w-3 h-3" /> Disconnected
-                    </>
-                  )}
+                  {connected ? <><Wifi className="w-3 h-3" /> Connected</> : <><WifiOff className="w-3 h-3" /> Disconnected</>}
                 </div>
               </div>
 
@@ -267,20 +286,10 @@ const handleShopifySubmit = (e) => {
               )}
               <Button 
                 onClick={() => handleConnectClick(p.key)} 
-               className={`w-full gap-2 transition-all duration-150 rounded-lg py-2.5 font-medium ${
-                connected 
-                 ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700" 
-                : p.btn
-                  }`}
-                >
-                 {connected ? (
-                "Manage Integration"
-                  ) : (
-                  <>
-                   <ExternalLink className="w-4 h-4" /> Connect
-                      </>
-                   )}
-                  </Button>
+                className={`w-full gap-2 transition-all duration-150 rounded-lg py-2.5 font-medium ${connected ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700" : p.btn}`}
+              >
+                {connected ? "Manage Integration" : <><ExternalLink className="w-4 h-4" /> Connect</>}
+              </Button>
             </div>
           );
         })}
@@ -288,9 +297,7 @@ const handleShopifySubmit = (e) => {
 
       <Dialog open={showWhatsAppModal} onOpenChange={setShowWhatsAppModal}>
         <DialogContent className="bg-slate-900 border border-slate-800 text-white max-w-md">
-          <DialogHeader>
-            <DialogTitle>Connect WhatsApp Business Cloud API</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Connect WhatsApp Business Cloud API</DialogTitle></DialogHeader>
           <form onSubmit={handleWhatsAppSubmit} className="space-y-4 mt-2">
             <div>
               <label className="text-xs text-slate-400 block mb-1">Display Phone Number</label>
@@ -312,30 +319,19 @@ const handleShopifySubmit = (e) => {
           </form>
         </DialogContent>
       </Dialog>
-      {/* SHOPIFY STORE MODAL */}
-<Dialog open={showShopifyModal} onOpenChange={setShowShopifyModal}>
-  <DialogContent className="bg-slate-900 border border-slate-800 text-white max-w-md">
-    <DialogHeader>
-      <DialogTitle>Connect Shopify Store</DialogTitle>
-    </DialogHeader>
-    <form onSubmit={handleShopifySubmit} className="space-y-4 mt-2">
-      <div>
-        <label className="text-xs text-slate-400 block mb-1">Shopify Store Domain</label>
-        <Input 
-          required 
-          value={shopifyDomain} 
-          onChange={(e) => setShopifyDomain(e.target.value)} 
-          placeholder="your-store.myshopify.com" 
-          className="bg-slate-950 border-slate-800 text-white" 
-        />
-      </div>
-      <Button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium">
-        Connect Shopify Store
-      </Button>
-    </form>
-  </DialogContent>
-</Dialog>
 
+      <Dialog open={showShopifyModal} onOpenChange={setShowShopifyModal}>
+        <DialogContent className="bg-slate-900 border border-slate-800 text-white max-w-md">
+          <DialogHeader><DialogTitle>Connect Shopify Store</DialogTitle></DialogHeader>
+          <form onSubmit={handleShopifySubmit} className="space-y-4 mt-2">
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Shopify Store Domain</label>
+              <Input required value={shopifyDomain} onChange={(e) => setShopifyDomain(e.target.value)} placeholder="your-store.myshopify.com" className="bg-slate-950 border-slate-800 text-white" />
+            </div>
+            <Button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium">Connect Shopify Store</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

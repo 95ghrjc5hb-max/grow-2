@@ -20,7 +20,7 @@ export const beginShopifyAuth = (req, res) => {
 export const handleShopifyCallback = async (req, res) => {
   try {
     const { shop, code } = req.query;
-    const userId = req.user?.id; // Retrieved via Auth Middleware
+    const orgId = req.user?.id || req.user?.userId || req.user?.org_id;
 
     if (!shop || !code) {
       return res.status(400).send("Invalid callback parameters from Shopify.");
@@ -44,18 +44,17 @@ export const handleShopifyCallback = async (req, res) => {
     }
 
     // Upsert integration record into Supabase for this specific user
-    const { error } = await supabase
-      .from('integrations')
-      .upsert({
-        user_id: userId,
-        platform: 'shopify',
-        account_name: shop,
-        access_token: tokenData.access_token,
-        metadata: { shop_domain: shop, scope: tokenData.scope },
-        status: 'connected',
-        updated_at: new Date()
-      }, { onConflict: 'user_id, platform' });
-
+    await supabase
+  .from('integrations')
+  .upsert({
+    org_id: orgId,
+    platform: 'shopify',
+    account_name: shop,
+    access_token: tokenData.access_token,
+    metadata: { shop_domain: shop, scope: tokenData.scope },
+    status: 'connected',
+    updated_at: new Date()
+  }, { onConflict: 'org_id, platform' });
     if (error) throw error;
 
     // Redirect user back to the frontend integrations page
