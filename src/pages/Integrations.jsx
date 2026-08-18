@@ -89,8 +89,73 @@ export default function Integrations() {
   };
 
   useEffect(() => {
+  fetchActiveIntegrations();
+
+  // Initialize Meta SDK for 1-Click WhatsApp
+  if (window.FB) {
+    window.FB.init({
+      appId: import.meta.env.VITE_META_APP_ID || '1457050622922623',
+      cookie: true,
+      xfbml: true,
+      version: 'v18.0'
+    });
+  }
+}, []);
+
+const handleWhatsApp1Click = () => {
+    if (!window.FB) {
+      toast({
+        title: "Loading Meta SDK...",
+        description: "Please wait 2 seconds and click again."
+      });
+      return;
+    }
+
+    window.FB.login(
+      (response) => {
+        if (response.authResponse) {
+          const tokenOrCode = response.authResponse.accessToken || response.authResponse.code;
+          handleWhatsAppCodeExchange(tokenOrCode);
+        } else {
+          console.log("[WHATSAPP CANCELLED]: User cancelled the onboarding.");
+        }
+      },
+      {
+        scope: "whatsapp_business_management,whatsapp_business_messaging",
+        return_scopes: true
+      }
+    );
+  };
+
+// Backend Exchange for WhatsApp Credentials
+const handleWhatsAppCodeExchange = async (code) => {
+  try {
+    const { token } = getTokenAndOrgId();
+    const res = await fetch("/api/integrations/whatsapp/oauth", {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ code })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to connect WhatsApp');
+
+    toast({
+      title: 'WhatsApp Connected!',
+      description: 'WhatsApp Business API is now connected with 1-click.'
+    });
     fetchActiveIntegrations();
-  }, []);
+  } catch (err) {
+    toast({
+      title: 'Connection Failed',
+      description: err.message,
+      variant: 'destructive'
+    });
+  }
+};
 
   // 🔄 LOGIC: Fetch integrations with strict Auth verification
   const fetchActiveIntegrations = async () => {
@@ -196,7 +261,10 @@ export default function Integrations() {
       return;
     }
 
-    if (platformKey === "whatsapp") setShowWhatsAppModal(true);
+   if (platformKey === "whatsapp") {
+  handleWhatsApp1Click();
+  return;
+}
     else if (platformKey === "shopify") setShowShopifyModal(true);
     else handleMetaOAuth(platformKey);
   };
