@@ -3,7 +3,7 @@ import { handleCustomerMessage } from '../services/aiAgentService.js';
 import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.js';
 import { createShopifyOrder } from '../services/shopifyService.js';
 
-// Meta Webhook Verification (Handles Messenger, Instagram & WhatsApp)
+// Meta Webhook Verification (Messenger, Instagram & WhatsApp)
 export const verifyMetaWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -16,7 +16,52 @@ export const verifyMetaWebhook = (req, res) => {
   return res.sendStatus(403);
 };
 
-// Helper: Push order to Shopify if store is connected
+// Helper: Get or Create Conversation Thread in Supabase
+const getOrCreateConversation = async (orgId, channel, customerId, customerName, initialMessage) => {
+  try {
+    let { data: conv } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('org_id', orgId)
+      .eq('customer_identifier', customerId)
+      .eq('channel', channel)
+      .limit(1)
+      .maybeSingle();
+
+    if (!conv) {
+      const { data: newConv, error: createError } = await supabase
+        .from('conversations')
+        .insert({
+          org_id: orgId,
+          customer_name: customerName,
+          customer_identifier: customerId,
+          channel: channel,
+          last_message: initialMessage,
+          status: 'open',
+          updated_at: new Date()
+        })
+        .select()
+        .single();
+
+      if (createError) throw createError;
+      return newConv;
+    } else {
+      await supabase
+        .from('conversations')
+        .update({
+          last_message: initialMessage,
+          updated_at: new Date()
+        })
+        .eq('id', conv.id);
+      return conv;
+    }
+  } catch (err) {
+    console.error('[CONVERSATION SYNC ERROR]:', err.message);
+    return null;
+  }
+};
+
+// Helper: Push order to Shopify
 const syncOrderToShopify = async (orgId, orderData) => {
   try {
     const { data: shopifyInt } = await supabase
@@ -32,7 +77,6 @@ const syncOrderToShopify = async (orgId, orderData) => {
       const shopDomain = shopifyInt.metadata?.shop_domain || shopifyInt.account_name;
       if (shopDomain) {
         await createShopifyOrder(shopDomain, shopifyInt.access_token, orderData);
-        console.log(`[SHOPIFY SYNC SUCCESS]: Order pushed directly to Shopify store (${shopDomain})!`);
       }
     }
   } catch (err) {
@@ -42,12 +86,8 @@ const syncOrderToShopify = async (orgId, orderData) => {
 
 // Central Omnichannel Webhook Receiver
 export const handleMetaWebhook = async (req, res) => {
-  // Acknowledge Meta immediately to prevent timeouts
   res.status(200).send('EVENT_RECEIVED');
   const body = req.body;
-
-  console.log('\n=================== [INCOMING WEBHOOK] ===================');
-  console.log('Platform/Object:', body.object);
 
   // =========================================================================
   // 1. WHATSAPP BUSINESS CLOUD API HANDLER
@@ -64,20 +104,13 @@ export const handleMetaWebhook = async (req, res) => {
         if (!messages || messages.length === 0) continue;
 
         for (const message of messages) {
-          // Ignore status updates, deliveries, read receipts
-          if (message.type !== 'text') {
-            console.log('[WHATSAPP SKIPPED]: Non-text message type:', message.type);
-            continue;
-          }
+          if (message.type !== 'text') continue;
 
           const customerPhone = message.from;
           const customerMessage = message.text?.body || '';
 
-          console.log(`[WHATSAPP RECEIVED] From: ${customerPhone} | Text: "${customerMessage}"`);
-
           try {
-            // Retrieve WhatsApp integration by Phone Number ID or general active integration
-            let { data: integration, error: integrationError } = await supabase
+            let { data: integration } = await supabase
               .from('integrations')
               .select('*')
               .eq('platform', 'whatsapp')
@@ -85,41 +118,58 @@ export const handleMetaWebhook = async (req, res) => {
               .limit(1)
               .maybeSingle();
 
-            if (integrationError || !integration) {
-              console.error('[WHATSAPP ERROR]: No active WhatsApp integration found in Supabase.');
-              continue;
+            if (!integration) continue;
+
+            const token = integration.access_token;
+            const activePhoneId = integration.page_id || phoneNumberId;
+
+            // 1. Sync Conversation in Supabase
+            const conv = await getOrCreateConversation(
+              integration.org_id,
+              'whatsapp',
+              customerPhone,
+              `+${customerPhone}`,
+              customerMessage
+            );
+
+            // 2. Save incoming message in 'messages' table
+            if (conv) {
+              await supabase.from('messages').insert({
+                conversation_id: conv.id,
+                sender: 'customer',
+                content: customerMessage,
+                platform_message_id: message.id || null,
+                created_at: new Date()
+              });
             }
 
-            const token = integration.credentials?.apiKey || integration.access_token;
-            const activePhoneId = integration.credentials?.phoneNumber || phoneNumberId;
-
-            // 1. Save incoming message
-            await supabase.from('messages').insert({
-              org_id: integration.org_id,
-              platform: 'whatsapp',
-              sender_id: customerPhone,
-              message: customerMessage,
-              direction: 'incoming',
-            });
-
-            // 2. Fetch products
+            // 3. Fetch products
             const { data: products } = await supabase
               .from('products')
               .select('*')
               .eq('org_id', integration.org_id);
 
-            // 3. Fetch chat history
-            const { data: chatHistory } = await supabase
-              .from('messages')
-              .select('*')
-              .eq('sender_id', customerPhone)
-              .order('created_at', { ascending: false })
-              .limit(10);
+            // 4. Fetch chat memory
+            let conversationHistory = [];
+            if (conv) {
+              const { data: chatHistory } = await supabase
+                .from('messages')
+                .select('*')
+                .eq('conversation_id', conv.id)
+                .order('created_at', { ascending: false })
+                .limit(10);
 
-            const conversationHistory = chatHistory ? chatHistory.reverse() : [];
-
-            // 4. Call AI Agent
-            console.log('[AI CALL] Requesting AI response for WhatsApp...');
+              conversationHistory = (chatHistory || []).reverse().map(m => ({
+                direction: m.sender === 'customer' ? 'incoming' : 'outgoing',
+                message: m.content
+              }));
+            }
+            // AI যদি Paused থাকে, তাহলে বটকে দিয়ে রিপ্লাই না দিয়ে এখানেই থামিয়ে দাও
+        if (conv && conv.ai_active === false) {
+            console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
+            continue; 
+        }
+            // 5. Call AI Service
             const aiResponse = await handleCustomerMessage({
               customerMessage,
               orgId: integration.org_id,
@@ -132,21 +182,24 @@ export const handleMetaWebhook = async (req, res) => {
               ? aiResponse
               : (aiResponse?.reply || 'Sorry, I could not process your request.');
 
-            console.log(`[AI GENERATED]: "${replyText}"`);
-
-            // 5. Send WhatsApp reply
+            // 6. Send WhatsApp Reply via Meta API
             await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
 
-            // 6. Save outgoing message
-            await supabase.from('messages').insert({
-              org_id: integration.org_id,
-              platform: 'whatsapp',
-              sender_id: customerPhone,
-              message: replyText,
-              direction: 'outgoing',
-            });
+            // 7. Save outgoing message in 'messages' table
+            if (conv) {
+              await supabase.from('messages').insert({
+                conversation_id: conv.id,
+                sender: 'bot',
+                content: replyText,
+                created_at: new Date()
+              });
+              await supabase
+                .from('conversations')
+                .update({ last_message: replyText, updated_at: new Date() })
+                .eq('id', conv.id);
+            }
 
-            // 7. Save Order & Push to Shopify
+            // 8. Save Order & Push to Shopify
             if (aiResponse && aiResponse.orderData) {
               const { customerName, phone, address, products: orderedProducts, totalPrice } = aiResponse.orderData;
               if (customerName && orderedProducts && typeof totalPrice === 'number') {
@@ -159,15 +212,11 @@ export const handleMetaWebhook = async (req, res) => {
                   total_amount: totalPrice,
                   status: 'pending',
                 });
-
-                // Auto-sync order to Shopify store
                 await syncOrderToShopify(integration.org_id, aiResponse.orderData);
               }
             }
-
-            console.log(`[WHATSAPP SUCCESS] Reply delivered to ${customerPhone}!`);
           } catch (err) {
-            console.error('[WHATSAPP PROCESSING ERROR]:', err.message);
+            console.error('[WHATSAPP WEBHOOK ERROR]:', err.message);
           }
         }
       }
@@ -182,7 +231,6 @@ export const handleMetaWebhook = async (req, res) => {
     for (const entry of body.entry) {
       const pageId = entry.id;
 
-      // Extract events from entry.messaging (Messenger) and entry.changes (Instagram)
       let events = [];
       if (entry.messaging && Array.isArray(entry.messaging)) {
         events = entry.messaging;
@@ -205,15 +253,12 @@ export const handleMetaWebhook = async (req, res) => {
         );
         const imageUrl = imageAttachment?.payload?.url || null;
 
-        console.log(`[MESSAGE RECEIVED] Platform: ${body.object} | Sender: ${senderId} | Text: "${customerMessage}"`);
-
         if (!senderId || (!customerMessage && !imageUrl)) continue;
 
         try {
-          // 1. Retrieve Connected Integration from Supabase
           const targetPlatform = body.object === 'page' ? 'messenger' : 'instagram';
           
-          let { data: integration, error: integrationError } = await supabase
+          let { data: integration } = await supabase
             .from('integrations')
             .select('*')
             .eq('page_id', pageId)
@@ -221,9 +266,7 @@ export const handleMetaWebhook = async (req, res) => {
             .limit(1)
             .maybeSingle();
 
-          // Fallback for Instagram
           if (!integration && body.object === 'instagram') {
-            console.log('[DB LOOKUP] Fetching active Instagram integration fallback...');
             const { data: fallbackInt } = await supabase
               .from('integrations')
               .select('*')
@@ -233,22 +276,31 @@ export const handleMetaWebhook = async (req, res) => {
             integration = fallbackInt;
           }
 
-          if (integrationError || !integration) {
-            console.error(`[WEBHOOK ERROR]: Integration not found for ${body.object} ID: ${pageId}`);
-            continue;
+          if (!integration) continue;
+
+          // 1. Sync Conversation in Supabase
+          const displayName = targetPlatform === 'messenger' 
+            ? `Messenger User (${senderId.slice(-4)})` 
+            : `Instagram User (${senderId.slice(-4)})`;
+
+          const conv = await getOrCreateConversation(
+            integration.org_id,
+            targetPlatform,
+            senderId,
+            displayName,
+            customerMessage || '[Customer sent an image]'
+          );
+
+          // 2. Save incoming message in 'messages' table
+          if (conv) {
+            await supabase.from('messages').insert({
+              conversation_id: conv.id,
+              sender: 'customer',
+              content: customerMessage || '[Customer sent an image]',
+              platform_message_id: messagingEvent.message.mid || null,
+              created_at: new Date()
+            });
           }
-
-          console.log(`[DB SUCCESS] Found Integration ID: ${integration.id} (Platform: ${integration.platform})`);
-
-          // 2. Save incoming message
-          const storedIncomingMessage = customerMessage || '[Customer sent an image]';
-          await supabase.from('messages').insert({
-            org_id: integration.org_id,
-            platform: body.object,
-            sender_id: senderId,
-            message: storedIncomingMessage,
-            direction: 'incoming',
-          });
 
           // 3. Fetch products
           const { data: products } = await supabase
@@ -256,18 +308,28 @@ export const handleMetaWebhook = async (req, res) => {
             .select('*')
             .eq('org_id', integration.org_id);
 
-          // 4. Fetch chat history
-          const { data: chatHistory } = await supabase
-            .from('messages')
-            .select('*')
-            .eq('sender_id', senderId)
-            .order('created_at', { ascending: false })
-            .limit(10);
+          // 4. Fetch chat memory
+          let conversationHistory = [];
+          if (conv) {
+            const { data: chatHistory } = await supabase
+              .from('messages')
+              .select('*')
+              .eq('conversation_id', conv.id)
+              .order('created_at', { ascending: false })
+              .limit(10);
 
-          const conversationHistory = chatHistory ? chatHistory.reverse() : [];
+            conversationHistory = (chatHistory || []).reverse().map(m => ({
+              direction: m.sender === 'customer' ? 'incoming' : 'outgoing',
+              message: m.content
+            }));
+          } 
+           // AI যদি Paused থাকে, তাহলে বটকে দিয়ে রিপ্লাই না দিয়ে এখানেই থামিয়ে দাও
+        if (conv && conv.ai_active === false) {
+            console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
+            continue; 
+        }
 
-          // 5. Call AI Agent
-          console.log('[AI CALL] Requesting AI response...');
+            // 5. Call AI Service
           const aiResponse = await handleCustomerMessage({
             customerMessage,
             orgId: integration.org_id,
@@ -280,20 +342,22 @@ export const handleMetaWebhook = async (req, res) => {
             ? aiResponse
             : (aiResponse?.reply || 'Sorry, I could not process your request.');
 
-          console.log(`[AI GENERATED]: "${replyText}"`);
-
           // 6. Send Meta Reply
-          console.log(`[SENDING REPLY] Delivering to ${senderId}...`);
           await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
 
-          // 7. Save outgoing message
-          await supabase.from('messages').insert({
-            org_id: integration.org_id,
-            platform: body.object,
-            sender_id: senderId,
-            message: replyText,
-            direction: 'outgoing',
-          });
+          // 7. Save outgoing message in 'messages' table
+          if (conv) {
+            await supabase.from('messages').insert({
+              conversation_id: conv.id,
+              sender: 'bot',
+              content: replyText,
+              created_at: new Date()
+            });
+            await supabase
+              .from('conversations')
+              .update({ last_message: replyText, updated_at: new Date() })
+              .eq('id', conv.id);
+          }
 
           // 8. Save Order & Push to Shopify
           if (aiResponse && aiResponse.orderData) {
@@ -308,13 +372,9 @@ export const handleMetaWebhook = async (req, res) => {
                 total_amount: totalPrice,
                 status: 'pending',
               });
-
-              // Auto-sync order to Shopify store
               await syncOrderToShopify(integration.org_id, aiResponse.orderData);
             }
           }
-
-          console.log(`[SUCCESS] Message successfully sent to ${senderId}!`);
         } catch (err) {
           console.error('[WEBHOOK PROCESSING ERROR]:', err.message);
         }

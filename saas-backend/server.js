@@ -17,6 +17,9 @@ import integrationRoutes from './routes/integrationRoutes.js';
 import webhookRoutes from './routes/webhookRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import authRoutes from './routes/authRoutes.js';
+import { getConversations, sendManualMessage } from './controllers/conversationController.js';
+import conversationRoutes from './routes/conversationRoutes.js';
+import { authenticateToken } from './middleware/authMiddleware.js'; 
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,7 +49,7 @@ const transporter = nodemailer.createTransport({
 app.use(cors({
   origin: true, // Automatically accepts request from http://localhost:5173
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -86,33 +89,7 @@ if (supabase) {
   console.error('🔴 [DATABASE] Engine connection failure.');
 }
 
-// ==========================================
-// 4. ARCHITECTURAL SCHEMAS 
-// ==========================================
-// Note: Unlike Mongoose (MongoDB), Supabase (PostgreSQL) does not require 
-// defining schemas in the code.
-// You must create the 'users', 'conversations', and 'orders' tables 
-// directly in the Supabase Dashboard via the "Table Editor".
 
-// ==========================================
-// 5. SECURITY AUTHENTICATION MIDDLEWARE
-// ==========================================
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).json({ success: false, error: 'Session token missing or unauthorized.' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ success: false, error: 'Session expired or cryptographic signature invalid.' });
-    }
-    req.user = user;
-    next();
-  });
-};
 
 // ==========================================
 // 6. CENTRAL CORE API ENDPOINTS
@@ -384,42 +361,10 @@ app.get('/api/v1/auth/me', authenticateToken, async (req, res) => {
 });
 
 
-app.get('/api/conversations', authenticateToken, async (req, res) => {
-  try {
-    // 1. Safe extraction of userId (Handles both req.user.id and req.user.userId)
-    const userId = req.user?.id || req.user?.userId;
+// Unified Inbox Endpoints
 
-    // 2. Safety guard: Return empty array instead of crashing 500 error
-    if (!userId || userId === 'undefined') {
-      return res.status(200).json({ success: true, data: [] });
-    }
-
-    // 3. Query Supabase safely with fallback column checks
-    const { data: records, error } = await supabase
-      .from('conversations')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('[CONVERSATION FETCH ERROR]:', error.message);
-      return res.status(200).json({ success: true, data: [] });
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: records || []
-    });
-
-  } catch (error) {
-    console.error('[CONVERSATION ROUTE CRASH]:', error.message);
-    return res.status(200).json({
-      success: true,
-      data: [],
-      error: error.message
-    });
-  }
-});
+app.post('/api/message/send', authenticateToken, sendManualMessage);
+app.use('/api/conversations', conversationRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/integrations', integrationRoutes);
