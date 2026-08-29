@@ -158,7 +158,14 @@ async function revokeSession(userId, sessionId) {
   assertNoError(error, "Failed to revoke session");
   if (!data) throw new NotFoundError("Session not found");
 }
+async function deleteAccount(userId) {
+  const { error } = await supabase
+    .from("profiles")
+    .delete()
+    .eq("id", userId);
 
+  assertNoError(error, "Failed to delete account data from database");
+}
 // ---------------------------------------------------------------------------
 // Store & workspace
 // ---------------------------------------------------------------------------
@@ -225,22 +232,26 @@ async function getAIAgentConfig(workspaceId) {
   assertNoError(error, "Failed to load AI config");
 
   return {
-    model: data?.model_name || "llama-3.1-8b-instant",
-    persona: "Grow AI Assistant",
-    systemPrompt: data?.system_prompt || "",
-    restrictedTopics: [],
-    confidenceThreshold: 0.8,
-  };
+  model: data?.model_name || "Llama-3.1-8b-instant",
+  persona: data?.persona || "Grow AI Assistant",
+  systemPrompt: data?.system_prompt || "",
+  restrictedTopics: data?.restricted_topics || [],
+  confidenceThreshold: data?.confidence_threshold ?? 0.8,
+};
 }
 
 async function updateAIAgentConfig(workspaceId, payload) {
   const { data, error } = await supabase
     .from("bot_configs")
     .upsert({
-      org_id: workspaceId, // FIXED: Changed user_id to org_id
-      model_name: payload.model,
-      system_prompt: payload.systemPrompt,
-    }, { onConflict: 'org_id' })
+  org_id: workspaceId, 
+  model_name: payload.model,
+  system_prompt: payload.systemPrompt,
+  persona: payload.persona,
+  restricted_topics: payload.restrictedTopics,
+  confidence_threshold: payload.confidenceThreshold
+}, { onConflict: 'org_id' })
+
     .select("*")
     .maybeSingle();
 
@@ -330,19 +341,20 @@ async function updateEscalationRules(workspaceId, payload) {
   const { data, error } = await supabase
     .from("escalation_rules")
     .upsert({
-      workspace_id: workspaceId,
-      working_hours: payload.workingHours,
-      handover_on_low_confidence: payload.handoverOnLowConfidence,
-      handover_on_negative_sentiment: payload.handoverOnNegativeSentiment,
-      handover_on_refund_request: payload.handoverOnRefundRequest,
-      max_replies_before_handover: payload.maxRepliesBeforeHandover,
-    })
+      org_id: workspaceId,
+      working_hours: payload.working_hours,
+      handover_on_low_confidence: payload.handover_on_low_confidence,
+      handover_on_negative_sentiment: payload.handover_on_negative_sentiment,
+      handover_on_refund_request: payload.handover_on_refund_request,
+      max_replies_before_handover: payload.max_replies_before_handover
+    }, { onConflict: 'org_id' })
     .select("*")
-    .maybeSingle(); // FIXED
+    .maybeSingle();
 
   assertNoError(error, "Failed to update escalation rules");
   return payload;
 }
+
 
 // ---------------------------------------------------------------------------
 // Integrations & channels
@@ -464,6 +476,7 @@ async function createApiKey(workspaceId, label) {
   const { data, error } = await supabase
     .from("api_keys")
     .insert({
+      org_id: workspaceId,
       workspace_id: workspaceId,
       label: label.trim(),
       key_hash: hash,
@@ -512,59 +525,105 @@ async function getWebhookLogs(workspaceId, { limit = 20, cursor } = {}) {
   }));
 }
 
-// ---------------------------------------------------------------------------
-// Billing & usage
-// ---------------------------------------------------------------------------
+// ///////////////////////////////////////////////////////////////////////////
+// // Billing & usage
+// ///////////////////////////////////////////////////////////////////////////
 
 function startOfCurrentMonthISO() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 }
 
+// Removed 'export' to prevent Duplicate Export error!
 async function getBillingUsage(workspaceId) {
-  const [
-    { data: billing, error: billingError }, 
-    { count: activeChats }, 
-    { count: monthlyChats }
-  ] = await Promise.all([
-      supabase
+    // 1. Fetch billing info from the database
+    const { data: billing, error: billingError } = await supabase
         .from("billing_accounts")
         .select("*")
         .eq("workspace_id", workspaceId)
-        .maybeSingle(), // FIXED: Changed to maybeSingle
-      supabase
-        .from("conversations")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", workspaceId) 
-        .eq("status", "open"),
-      supabase
-        .from("conversations")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", workspaceId)
-        .gte("created_at", startOfCurrentMonthISO()),
+        .maybeSingle();
+
+    assertNoError(billingError, "Failed to load billing account");
+
+    const now = new Date();
+    // Default fallback: 1st day of the current month
+    let planStartedAt = new Date(now.getFullYear(), now.getMonth(), 1); 
+    let isExpired = false;
+    let renewsAtDate = "N/A";
+    
+    // Default Free Plan settings
+    let activePlanName = "Grow Free";
+    let activeTokenLimit = 30; 
+    let activePriceLabel = "$0/mo";
+
+    if (billing && billing.updated_at) {
+        const lastUpdated = new Date(billing.updated_at);
+        const expiryDate = new Date(lastUpdated);
+        expiryDate.setMonth(expiryDate.getMonth() + 1); // Expires exactly after 1 month
+
+        renewsAtDate = expiryDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+
+        if (now > expiryDate) {
+            // Plan has expired (30 days passed)
+            isExpired = true;
+            renewsAtDate = "Expired";
+            
+            // Reverts to Free Plan, usage count resets to the 1st of the current month
+            planStartedAt = new Date(now.getFullYear(), now.getMonth(), 1); 
+        } else {
+            // Plan is still active
+            activePlanName = billing.plan_name;
+            activeTokenLimit = billing.token_limit;
+            activePriceLabel = billing.price_label;
+            
+            // Magic Logic: Usage count starts EXACTLY from the date the user purchased/renewed the plan
+            planStartedAt = lastUpdated; 
+        }
+    }
+
+    // 2. Count conversations created AFTER 'planStartedAt' date
+    const [
+        { count: activeChats },
+        { count: usedChats }
+    ] = await Promise.all([
+        supabase.from("conversations").select("id", { count: "exact", head: true }).eq("user_id", workspaceId).eq("status", "open"),
+        supabase.from("conversations").select("id", { count: "exact", head: true }).eq("user_id", workspaceId).gte("created_at", planStartedAt.toISOString()),
     ]);
 
-  assertNoError(billingError, "Failed to load billing account");
+    return {
+            planName: activePlanName,
+            status: isExpired ? "Expired" : (billing?.status || "Active"),
+            renewsAt: renewsAtDate,
+            priceLabel: activePriceLabel,
+            
+            // Fixes for Customer Usage progress bar (Frontend expects these names)
+            customerLimit: billing?.token_limit || activeTokenLimit,
+            customersUsed: billing?.tokens_used || 0,
 
-  const safeBilling = billing || {
-    plan_name: "Grow Free",
-    status: "active",
-    renews_at: "N/A",
-    price_label: "$0/mo",
-    token_limit: 1000,
-    tokens_used: 0
-  };
+            tokenLimit: billing?.token_limit || activeTokenLimit,
+            tokensUsed: billing?.tokens_used || 0,
 
-  return {
-    planName: safeBilling.plan_name,
-    status: safeBilling.status,
-    renewsAt: safeBilling.renews_at,
-    priceLabel: safeBilling.price_label,
-    tokenLimit: safeBilling.token_limit,
-    tokensUsed: safeBilling.tokens_used,
-    activeChats: activeChats ?? 0,
-    chatsThisMonth: monthlyChats ?? 0,
-  };
+            activeChats: activeChats ?? 0,
+            chatsThisMonth: usedChats ?? 0,
+        };
+}
+
+// User notun plan kinle database e update korar jonno notun function
+export async function updateBillingPlan(workspaceId, newPlanName, newLimit, newPriceLabel) {
+    const { data, error } = await supabase
+        .from('billing_accounts')
+        .upsert({ 
+            workspace_id: workspaceId, // Jodi database e org_id thake tobe ekhane org_id likhben
+            plan_name: newPlanName,
+            token_limit: newLimit,
+            price_label: newPriceLabel,
+            updated_at: new Date().toISOString()
+        }, { onConflict: 'workspace_id' }) // onConflict eo same
+        .select()
+        .single();
+
+    assertNoError(error, "Failed to update billing plan");
+    return data;
 }
 
 async function getInvoices(workspaceId) {
@@ -579,6 +638,7 @@ async function getInvoices(workspaceId) {
 }
 
 export {
+ deleteAccount,
   NotFoundError,
   ValidationError,
   getProfile,

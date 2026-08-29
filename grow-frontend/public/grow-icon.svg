@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="logo-gradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#14b8a6" /> <!-- Tailwind teal-500 -->
+      <stop offset="50%" stop-color="#22d3ee" /> <!-- Tailwind cyan-400 -->
+      <stop offset="100%" stop-color="#14b8a6" /> <!-- Tailwind teal-500 -->
+    </linearGradient>
+  </defs>
+  
+  <!-- Background Box -->
+  <rect width="24" height="24" rx="6" fill="url(#logo-gradient)" />
+  
+  <!-- Hollow Lucide Zap Icon Path (Scaled Down) -->
+  <path transform="translate(12 12) scale(0.75) translate(-12 -12)" d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" fill="none" stroke="white" stroke-width="2" stroke-linejoin="round" />
+</svg>

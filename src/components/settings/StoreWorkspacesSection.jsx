@@ -14,8 +14,9 @@ import {
   EmptyState,
 } from "./ui/SettingsPrimitives";
 
-const TIMEZONES = ["UTC", "Asia/Dhaka", "America/New_York", "America/Los_Angeles", "Europe/London", "Asia/Singapore"];
-const CURRENCIES = ["USD", "EUR", "GBP", "BDT", "INR", "SGD"];
+const TIMEZONES = Intl.supportedValuesOf('timeZone');
+
+const CURRENCIES = Intl.supportedValuesOf('currency');
 
 export default function StoreWorkspacesSection() {
   const [workspace, setWorkspace] = useState(null);

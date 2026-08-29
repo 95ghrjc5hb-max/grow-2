@@ -1,7 +1,36 @@
 import { supabase } from '../config/supabase.js';
-import { handleCustomerMessage } from '../services/aiAgentService.js';
 import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.js';
 import { createShopifyOrder } from '../services/shopifyService.js';
+import { getNotificationSettings, getBillingUsage } from '../services/settingsService.js';
+import { handleCustomerMessage, transcribeAudioWithGroq } from '../services/aiAgentService.js';
+// --- Helper: Send Notification to Slack & Discord ---
+const sendAlertToChannels = async (orgId, eventType, textMessage) => {
+    try {
+        const settings = await getNotificationSettings(orgId);
+        if (!settings) return;
+
+        const pushToWebhook = async (url, payload) => {
+            if (!url) return;
+            await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        };
+
+        // Slack check & send
+        if (settings.slack && settings.slack[eventType] && settings.slack.webhookUrl) {
+            await pushToWebhook(settings.slack.webhookUrl, { text: `🔔 *Grow SaaS Alert:*\n${textMessage}` });
+        }
+
+        // Discord check & send
+        if (settings.discord && settings.discord[eventType] && settings.discord.webhookUrl) {
+            await pushToWebhook(settings.discord.webhookUrl, { content: `🔔 **Grow SaaS Alert:**\n${textMessage}` });
+        }
+    } catch (err) {
+        console.error('[NOTIFICATION ERROR]', err.message);
+    }
+};
 
 // Meta Webhook Verification (Messenger, Instagram & WhatsApp)
 export const verifyMetaWebhook = (req, res) => {
@@ -18,47 +47,86 @@ export const verifyMetaWebhook = (req, res) => {
 
 // Helper: Get or Create Conversation Thread in Supabase
 const getOrCreateConversation = async (orgId, channel, customerId, customerName, initialMessage) => {
-  try {
-    let { data: conv } = await supabase
-      .from('conversations')
-      .select('*')
-      .eq('org_id', orgId)
-      .eq('customer_identifier', customerId)
-      .eq('channel', channel)
-      .limit(1)
-      .maybeSingle();
+    try {
+        let { data: conv } = await supabase
+            .from('conversations')
+            .select('*')
+            .eq('org_id', orgId)
+            .eq('customer_identifier', customerId)
+            .eq('channel', channel)
+            .maybeSingle();
 
-    if (!conv) {
-      const { data: newConv, error: createError } = await supabase
-        .from('conversations')
-        .insert({
-          org_id: orgId,
-          customer_name: customerName,
-          customer_identifier: customerId,
-          channel: channel,
-          last_message: initialMessage,
-          status: 'open',
-          updated_at: new Date()
-        })
-        .select()
-        .single();
+        if (!conv) {
+            // 🛑 FIRST: Check current billing limits BEFORE creating the chat or increasing token
+            const { data: billing } = await supabase
+                .from('billing_accounts')
+                .select('tokens_used, token_limit')
+                .eq('org_id', orgId)
+                .maybeSingle();
 
-      if (createError) throw createError;
-      return newConv;
-    } else {
-      await supabase
-        .from('conversations')
-        .update({
-          last_message: initialMessage,
-          updated_at: new Date()
-        })
-        .eq('id', conv.id);
-      return conv;
+            const currentUsed = billing?.tokens_used || 0;
+            const limit = billing?.token_limit || 30;
+
+            let isBlocked = false;
+
+            if (currentUsed >= limit) {
+                // Limit is full! Mark this conversation as blocked so AI won't reply.
+                isBlocked = true;
+            } else {
+                // Safe to increment since limit is not reached yet
+                await supabase
+                    .from('billing_accounts')
+                    .update({ tokens_used: currentUsed + 1 })
+                    .eq('org_id', orgId);
+            }
+
+            const { data: newConv, error: createError } = await supabase
+                .from('conversations')
+                .insert({
+                    org_id: orgId,
+                    customer_name: customerName,
+                    customer_identifier: customerId,
+                    channel: channel,
+                    last_message: initialMessage,
+                    status: 'open',
+                    updated_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (createError) throw createError;
+
+            // Attach block flag directly to the returned conversation object
+            newConv.is_limit_blocked = isBlocked;
+            return newConv;
+        }
+
+        // If conversation already exists (Old customer)
+        await supabase
+            .from('conversations')
+            .update({
+                last_message: initialMessage,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', conv.id);
+
+        // Also check if even for existing customers, the limit is already breached
+        const { data: billingCheck } = await supabase
+            .from('billing_accounts')
+            .select('tokens_used, token_limit')
+            .eq('org_id', orgId)
+            .maybeSingle();
+
+        const usedNow = billingCheck?.tokens_used || 0;
+        const limitNow = billingCheck?.token_limit || 30;
+
+        conv.is_limit_blocked = (usedNow >= limitNow);
+        return conv;
+
+    } catch (err) {
+        console.error('[CONVERSATION SYNC ERROR]:', err.message);
+        return null;
     }
-  } catch (err) {
-    console.error('[CONVERSATION SYNC ERROR]:', err.message);
-    return null;
-  }
 };
 
 // Helper: Push order to Shopify
@@ -104,10 +172,37 @@ export const handleMetaWebhook = async (req, res) => {
         if (!messages || messages.length === 0) continue;
 
         for (const message of messages) {
-          if (message.type !== 'text') continue;
+        const customerPhone = message.from;
+        let customerMessage = '';
+        let audioUrl = null;
 
-          const customerPhone = message.from;
-          const customerMessage = message.text?.body || '';
+        if (message.type === 'text') {
+            customerMessage = message.text.body || '';
+        } else if (message.type === 'audio' || message.type === 'voice') {
+            // WhatsApp voice message handling
+            const audioObj = message.audio || message.voice;
+            if (audioObj && audioObj.id) {
+                try {
+                    // Fetch media URL from Meta Graph API using the media ID
+                    const mediaRes = await fetch(`https://graph.facebook.com/v19.0/${audioObj.id}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    const mediaData = await mediaRes.json();
+                    if (mediaData && mediaData.url) {
+                        audioUrl = mediaData.url;
+                    }
+                } catch (err) {
+                    console.error('[WHATSAPP AUDIO URL FETCH ERROR]:', err.message);
+                }
+            }
+        }
+
+        // If it's an audio message, transcribe it using Groq Whisper!
+        if (audioUrl) {
+            customerMessage = await transcribeAudioWithGroq(audioUrl)
+        }
+
+        if (!customerMessage) continue;
 
           try {
             let { data: integration } = await supabase
@@ -170,21 +265,79 @@ export const handleMetaWebhook = async (req, res) => {
             continue; 
         }
             // 5. Call AI Service
-            const aiResponse = await handleCustomerMessage({
-              customerMessage,
-              orgId: integration.org_id,
-              storeProducts: products || [],
-              conversationHistory,
-              imageUrl: null,
+          // 5. Call AI Service & Check Limit First
+// 5. Call AI Service & Check Limit Strictly
+        let aiResponse = null;
+
+        // 🛑 STRICT BILLING & LIMIT CHECK
+        const { data: currentBilling } = await supabase
+            .from('billing_accounts')
+            .select('tokens_used, token_limit')
+            .eq('org_id', integration.org_id)
+            .maybeSingle();
+
+        const currentUsed = currentBilling?.tokens_used || 0;
+        const currentLimit = currentBilling?.token_limit || 30;
+
+        // 🚨 CRITICAL RULE: If usage touches or exceeds limit, STOP AI completely for EVERYONE!
+        if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
+            console.log(`[AI BLOCKED] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
+            aiResponse = {
+                reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
+                handover: true
+            };
+        } else if (conv && conv.ai_active === false) {
+            console.log('[AI PAUSED] Bot is paused by human agent.');
+            continue;
+        } else {
+            // Safe to call AI since limit is NOT reached yet
+            aiResponse = await handleCustomerMessage({
+                customerMessage,
+                orgId: integration.org_id,
+                storeProducts: products || [],
+                conversationHistory,
+                imageUrl: null
             });
+        }
+            // 🔔 SEND HUMAN HANDOVER NOTIFICATION
+        if (aiResponse && aiResponse.handover) {
+            await sendAlertToChannels(
+                integration.org_id,
+                'notifyOnHandover',
+                `⚠️ *Human Handover Requested!*\nCustomer Phone: ${customerPhone} needs human assistance.`
+            );
+        }
 
             const replyText = typeof aiResponse === 'string'
-              ? aiResponse
-              : (aiResponse?.reply || 'Sorry, I could not process your request.');
+            ? aiResponse
+            : (aiResponse?.reply || 'Sorry, I could not process your request.');
 
-            // 6. Send WhatsApp Reply via Meta API
-            await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
+        const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
 
+        // 6. Send WhatsApp Reply (Text Message)
+        await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
+
+        // 6.5 🚀 MAGIC: Send WhatsApp Image (If AI provided a product image!)
+        if (replyImage && replyImage.startsWith('http')) {
+            try {
+                await fetch(`https://graph.facebook.com/v19.0/${activePhoneId}/messages`, {
+                    method: 'POST',
+                    headers: { 
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json' 
+                    },
+                    body: JSON.stringify({
+                        messaging_product: 'whatsapp',
+                        recipient_type: 'individual',
+                        to: customerPhone,
+                        type: 'image',
+                        image: { link: replyImage }
+                    })
+                });
+            } catch (imgErr) {
+                console.error('[WHATSAPP IMAGE SEND ERROR]:', imgErr.message);
+            }
+        }
             // 7. Save outgoing message in 'messages' table
             if (conv) {
               await supabase.from('messages').insert({
@@ -214,6 +367,12 @@ export const handleMetaWebhook = async (req, res) => {
                 });
                 await syncOrderToShopify(integration.org_id, aiResponse.orderData);
               }
+              // 🔔 SEND ORDER NOTIFICATION
+            await sendAlertToChannels(
+                integration.org_id,
+                'notifyOnOrderUpdate',
+                `🛍️ *New Order Received!*\nCustomer: ${customerName}\nPhone: ${customerPhone || 'N/A'}\nTotal Amount: ${totalPrice}\nProducts: ${JSON.stringify(orderedProducts)}`
+            );
             }
           } catch (err) {
             console.error('[WHATSAPP WEBHOOK ERROR]:', err.message);
@@ -246,15 +405,23 @@ export const handleMetaWebhook = async (req, res) => {
         if (!messagingEvent.message || messagingEvent.message.is_echo) continue;
 
         const senderId = messagingEvent.sender?.id;
-        const customerMessage = messagingEvent.message?.text || '';
+        let customerMessage = messagingEvent.message?.text || '';
 
-        const imageAttachment = messagingEvent.message?.attachments?.find(
-          (att) => att.type === 'image'
-        );
+        // 🖼️ 1. Extract Image if present
+        const imageAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'image');
         const imageUrl = imageAttachment?.payload?.url || null;
 
-        if (!senderId || (!customerMessage && !imageUrl)) continue;
+        // 🎙️ 2. Extract Audio if present
+        const audioAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'audio');
+        const audioUrl = audioAttachment?.payload?.url || null;
 
+        // 🎙️ 3. Transcribe Audio using Groq Whisper
+        if (audioUrl && !customerMessage) {
+            customerMessage = await transcribeAudioWithGroq(audioUrl);
+        }
+
+        // 🛑 4. Skip if nothing valid received
+        if (!senderId || (!customerMessage && !imageUrl)) continue;
         try {
           const targetPlatform = body.object === 'page' ? 'messenger' : 'instagram';
           
@@ -329,21 +496,77 @@ export const handleMetaWebhook = async (req, res) => {
             continue; 
         }
 
-            // 5. Call AI Service
-          const aiResponse = await handleCustomerMessage({
-            customerMessage,
-            orgId: integration.org_id,
-            storeProducts: products || [],
-            conversationHistory,
-            imageUrl,
-          });
+          // 5. Call AI Service & Check Limit Strictly (Messenger/IG)
+        let aiResponse = null;
 
-          const replyText = typeof aiResponse === 'string'
+        // 🛑 STRICT BILLING & LIMIT CHECK
+        const { data: currentBilling } = await supabase
+            .from('billing_accounts')
+            .select('tokens_used, token_limit')
+            .eq('org_id', integration.org_id)
+            .maybeSingle();
+
+        const currentUsed = currentBilling?.tokens_used || 0;
+        const currentLimit = currentBilling?.token_limit || 30;
+
+        // 🚨 CRITICAL RULE: Block AI if limit is full!
+        if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
+            console.log(`[AI BLOCKED - MESSENGER/IG] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
+            aiResponse = {
+                reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
+                handover: true
+            };
+        } else if (conv && conv.ai_active === false) {
+            console.log('[AI PAUSED] Bot is paused by human agent.');
+            continue;
+        } else {
+            // Safe to call AI
+            aiResponse = await handleCustomerMessage({
+                customerMessage,
+                orgId: integration.org_id,
+                storeProducts: products || [],
+                conversationHistory,
+                imageUrl 
+            });
+        }
+          // 🔔 SEND HUMAN HANDOVER NOTIFICATION (Messenger/Instagram)
+        if (aiResponse && aiResponse.handover) {
+            await sendAlertToChannels(
+                integration.org_id,
+                'notifyOnHandover',
+                `⚠️ *Human Handover Requested!*\nCustomer (${targetPlatform}): ${customerMessage}`
+            );
+        }
+         
+         const replyText = typeof aiResponse === 'string'
             ? aiResponse
             : (aiResponse?.reply || 'Sorry, I could not process your request.');
+            
+        const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
 
-          // 6. Send Meta Reply
-          await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
+        // 6. Send Meta Reply (Text Message)
+        await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
+
+        // 6.5 🚀 MAGIC: Send Meta Image (If AI provided a product image!)
+        if (replyImage && replyImage.startsWith('http')) {
+            try {
+                await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${integration.access_token}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        recipient: { id: senderId },
+                        message: {
+                            attachment: {
+                                type: 'image',
+                                payload: { url: replyImage, is_reusable: true }
+                            }
+                        }
+                    })
+                });
+            } catch (imgErr) {
+                console.error('[IMAGE SEND ERROR]:', imgErr.message);
+            }
+        }
 
           // 7. Save outgoing message in 'messages' table
           if (conv) {
@@ -373,6 +596,12 @@ export const handleMetaWebhook = async (req, res) => {
                 status: 'pending',
               });
               await syncOrderToShopify(integration.org_id, aiResponse.orderData);
+              // 🔔 SEND ORDER NOTIFICATION (Messenger/Instagram)
+            await sendAlertToChannels(
+                integration.org_id,
+                'notifyOnOrderUpdate',
+                `🛍️ *New Order Received (${targetPlatform})!*\nCustomer: ${customerName}\nPhone: ${phone || 'N/A'}\nTotal Amount: ${totalPrice}\nProducts: ${JSON.stringify(orderedProducts)}`
+            );
             }
           }
         } catch (err) {

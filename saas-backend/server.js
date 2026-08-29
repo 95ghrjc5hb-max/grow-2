@@ -20,6 +20,8 @@ import authRoutes from './routes/authRoutes.js';
 import { getConversations, sendManualMessage } from './controllers/conversationController.js';
 import conversationRoutes from './routes/conversationRoutes.js';
 import { authenticateToken } from './middleware/authMiddleware.js'; 
+import stripeRoutes from './routes/stripeRoutes.js';
+import { handleStripeWebhook } from './controllers/stripeController.js';
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +32,11 @@ dotenv.config({ path: './.env' });
 // 1. SYSTEM INITIALIZATION
 // ==========================================
 const app = express();
+app.use((req, res, next) => {
+  res.setHeader('ngrok-skip-browser-warning', 'true');
+  next();
+});
+
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'GROW_APP_SECURE_KEY_2026';
 
@@ -52,7 +59,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
+// IMPORTANT: Stripe Webhook MUST be placed exactly here, BEFORE express.json()
+app.post('/api/v1/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
 // 2. Security headers (Placed after CORS)
 app.use(helmet());
 
@@ -371,9 +379,10 @@ app.use('/api/integrations', integrationRoutes);
 app.use('/api/v1/webhooks', webhookRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
+app.use('/api/widget', express.static(path.join(__dirname, 'public/widget')));
 
 app.use('/api/v1/settings', settingsRoutes);
-
+app.use('/api/v1/stripe', stripeRoutes);
 // Any request that doesn't match the API routes will load the frontend
 app.get(/(.*)/, (req, res) => {
   if (req.path.startsWith('/api')) {

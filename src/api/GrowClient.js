@@ -128,6 +128,7 @@ export const settings = {
   // ---- Billing & usage ----
   getBillingUsage: () => api.get("/settings/billing"),
   getInvoices: () => api.get("/settings/billing/invoices"),
+  updatePlan: (planName) => api.post("/stripe/create-checkout", { planName }),
 };
 
 // Backward compatibility for existing app components

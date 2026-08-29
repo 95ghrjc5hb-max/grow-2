@@ -48,6 +48,10 @@ export const revokeSession = asyncHandler(async (req, res) => {
   res.json({ success: true, data: null });
 });
 
+export const deleteAccount = asyncHandler(async (req, res) => {
+  await settingsService.deleteAccount(getUserId(req));
+  res.json({ success: true, message: "Account deleted successfully" });
+});
 // ---- Store & workspace ----
 
 export const getWorkspace = asyncHandler(async (req, res) => {
@@ -189,4 +193,28 @@ export const getBillingUsage = asyncHandler(async (req, res) => {
 export const getInvoices = asyncHandler(async (req, res) => {
   const data = await settingsService.getInvoices(getWorkspaceId(req));
   res.json({ success: true, data });
+});
+export const updatePlan = asyncHandler(async (req, res) => {
+    const { planName } = req.body;
+    if (!planName) return res.status(400).json({ success: false, error: "Plan name is required" });
+    
+   
+    let limit = 30;
+    let priceLabel = "$0/mo";
+    const name = planName.toLowerCase();
+
+    if (name.includes("pro") || name.includes("29")) {
+        limit = 500;
+        priceLabel = "$29/mo";
+    } else if (name.includes("premium") || name.includes("59")) {
+        limit = 1200;
+        priceLabel = "$59/mo";
+    } else if (name.includes("unlimited") || name.includes("100") || name.includes("enterprise")) {
+        limit = 3000;
+        priceLabel = "$100/mo";
+    }
+    
+   
+    const data = await settingsService.updateBillingPlan(getWorkspaceId(req), planName, limit, priceLabel);
+    res.json({ success: true, data });
 });

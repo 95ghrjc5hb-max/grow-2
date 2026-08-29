@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ChannelIcon from "@/components/shared/ChannelIcon";
 import api from "../api/GrowClient";
+import { supabase } from "../supabaseClient";
 
 const channelFilters = [
   { key: "all", label: "All", icon: null },
@@ -76,6 +77,68 @@ export default function UnifiedInbox() {
     }
   };
 
+ // Realtime subscription for incoming/outgoing messages
+  useEffect(() => {
+    const channel = supabase
+      .channel("realtime-messages-inbox")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "messages",
+        },
+        (payload) => {
+          const newMsg = payload.new;
+
+          // 1. Update currently selected active chat
+          setSelectedConv((prevSelected) => {
+            if (!prevSelected) return prevSelected;
+            const targetId = prevSelected.id || prevSelected._id;
+
+            if (newMsg.conversation_id === targetId) {
+              const exists = prevSelected.messages?.some(
+                (m) => m.id === newMsg.id || (m.created_at === newMsg.created_at && m.sender === newMsg.sender)
+              );
+              if (exists) return prevSelected;
+
+              return {
+                ...prevSelected,
+                messages: [...(prevSelected.messages || []), newMsg],
+                last_message: newMsg.content || newMsg.text || prevSelected.last_message,
+              };
+            }
+            return prevSelected;
+          });
+
+          // 2. Update sidebar conversations list live
+          setConversations((prevConvs) =>
+            prevConvs.map((conv) => {
+              const convId = conv.id || conv._id;
+              if (convId === newMsg.conversation_id) {
+                const exists = conv.messages?.some((m) => m.id === newMsg.id);
+                const updatedMessages = exists
+                  ? conv.messages
+                  : [...(conv.messages || []), newMsg];
+
+                return {
+                  ...conv,
+                  messages: updatedMessages,
+                  last_message: newMsg.content || newMsg.text || conv.last_message,
+                  updated_at: newMsg.created_at,
+                };
+              }
+              return conv;
+            })
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   useEffect(() => {
     fetchConversations();

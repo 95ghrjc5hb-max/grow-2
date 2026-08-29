@@ -209,15 +209,15 @@ export default function BotTraining() {
     setShowModal(true);
   };
 
-  const handleSaveConfig = async () => {
+  const handleSaveConfig = async (formData) => { 
     try {
-      const payload = {
-        llm_provider: configForm.provider,
-        model_name: configForm.model,
-        api_key: configForm.api_key,
-        system_prompt: configForm.system_prompt,
-        org_id: userOrgId,
-      };
+        const payload = {
+            llm_provider: formData.provider,
+            model_name: formData.model,
+            api_key: formData.api_key,
+            system_prompt: formData.system_prompt, 
+            org_id: userOrgId,
+        };
 
       if (botConfig && botConfig.id) {
         // UPDATE Existing Config

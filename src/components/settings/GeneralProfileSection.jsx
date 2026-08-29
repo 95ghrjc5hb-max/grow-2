@@ -28,7 +28,7 @@ export default function GeneralProfileSection() {
 
   const [sessions, setSessions] = useState([]);
   const [revokingId, setRevokingId] = useState(null);
-
+  const [isDeleting, setIsDeleting] = useState(false);
   const loadAll = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -120,7 +120,22 @@ export default function GeneralProfileSection() {
       setRevokingId(null);
     }
   }
+const handleDeleteAccount = async () => {
+    const confirmed = window.confirm("Are you absolutely sure you want to delete your account? This action cannot be undone and all data will be lost.");
+    if (!confirmed) return;
 
+    setIsDeleting(true);
+    try {
+        await settings.deleteAccount(); // Calling the API
+        // Logout user after deletion
+        window.location.href = "/login"; // Or use your auth context logout
+    } catch (err) {
+        console.error("Failed to delete account:", err);
+        alert("Failed to delete account. Please try again.");
+    } finally {
+        setIsDeleting(false);
+    }
+};
   if (loading) return <SectionSkeleton blocks={4} />;
   if (loadError) return <LoadError message={loadError} onRetry={loadAll} />;
 
@@ -249,6 +264,7 @@ export default function GeneralProfileSection() {
                     </p>
                   </div>
                 </div>
+
                 {!session.isCurrent && (
                   <Button
                     variant="ghost"
@@ -263,6 +279,27 @@ export default function GeneralProfileSection() {
             ))}
           </ul>
         )}
+      </SectionCard>
+      {/* Danger Zone - Account Deletion */}
+      <SectionCard 
+        title="Danger Zone" 
+        description="Permanently delete your account and all associated data. This action cannot be undone."
+        className="border-red-500/30"
+      >
+        <div className="flex items-center justify-between mt-4">
+            <div>
+                <p className="text-sm text-slate-200 font-medium">Delete Account</p>
+                <p className="text-xs text-slate-400">Remove all your personal data, workspace, and integrations.</p>
+            </div>
+            <Button 
+                variant="destructive" 
+                className="bg-red-600 hover:bg-red-700 text-white"
+                onClick={handleDeleteAccount}
+                loading={isDeleting}
+            >
+                Delete My Account
+            </Button>
+        </div>
       </SectionCard>
     </div>
   );
