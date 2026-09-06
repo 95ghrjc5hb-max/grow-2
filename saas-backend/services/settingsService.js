@@ -525,116 +525,119 @@ async function getWebhookLogs(workspaceId, { limit = 20, cursor } = {}) {
   }));
 }
 
-// ///////////////////////////////////////////////////////////////////////////
-// // Billing & usage
-// ///////////////////////////////////////////////////////////////////////////
 
-function startOfCurrentMonthISO() {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-}
 
-// Removed 'export' to prevent Duplicate Export error!
+// /////////////////////////////////////////////////////////////////////////
+// // Billing & Usage
+// /////////////////////////////////////////////////////////////////////////
+
 async function getBillingUsage(workspaceId) {
-    // 1. Fetch billing info from the database
-    const { data: billing, error: billingError } = await supabase
-        .from("billing_accounts")
-        .select("*")
-        .eq("workspace_id", workspaceId)
-        .maybeSingle();
+  // ১. সুপাবেস থেকে ডাটা ফেচ
+  let { data: billing, error: billingError } = await supabase
+    .from("billing_accounts")
+    .select("*")
+    .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+    .maybeSingle();
 
-    assertNoError(billingError, "Failed to load billing account");
+  // রেকর্ড না থাকলে ডিফল্ট ফ্রি রেকর্ড তৈরি করা (১০ মেটা কাস্টমার, ১০০ শপিফাই মেসেজ)
+  if (!billing) {
+    const { data: newBilling, error: insertError } = await supabase
+      .from("billing_accounts")
+      .insert({
+        org_id: workspaceId,
+        meta_plan: "Grow Free",
+        meta_status: "active",
+        meta_customers_limit: 10,
+        meta_customers_used: 0,
+        shopify_plan: "Grow Free",
+        shopify_status: "active",
+        shopify_messages_limit: 100,
+        shopify_messages_used: 0
+      })
+      .select()
+      .single();
 
-    const now = new Date();
-    // Default fallback: 1st day of the current month
-    let planStartedAt = new Date(now.getFullYear(), now.getMonth(), 1); 
-    let isExpired = false;
-    let renewsAtDate = "N/A";
-    
-    // Default Free Plan settings
-    let activePlanName = "Grow Free";
-    let activeTokenLimit = 30; 
-    let activePriceLabel = "$0/mo";
-
-    if (billing && billing.updated_at) {
-        const lastUpdated = new Date(billing.updated_at);
-        const expiryDate = new Date(lastUpdated);
-        expiryDate.setMonth(expiryDate.getMonth() + 1); // Expires exactly after 1 month
-
-        renewsAtDate = expiryDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-
-        if (now > expiryDate) {
-            // Plan has expired (30 days passed)
-            isExpired = true;
-            renewsAtDate = "Expired";
-            
-            // Reverts to Free Plan, usage count resets to the 1st of the current month
-            planStartedAt = new Date(now.getFullYear(), now.getMonth(), 1); 
-        } else {
-            // Plan is still active
-            activePlanName = billing.plan_name;
-            activeTokenLimit = billing.token_limit;
-            activePriceLabel = billing.price_label;
-            
-            // Magic Logic: Usage count starts EXACTLY from the date the user purchased/renewed the plan
-            planStartedAt = lastUpdated; 
-        }
+    if (!insertError) {
+      billing = newBilling;
     }
+  }
 
-    // 2. Count conversations created AFTER 'planStartedAt' date
-    const [
-        { count: activeChats },
-        { count: usedChats }
-    ] = await Promise.all([
-        supabase.from("conversations").select("id", { count: "exact", head: true }).eq("user_id", workspaceId).eq("status", "open"),
-        supabase.from("conversations").select("id", { count: "exact", head: true }).eq("user_id", workspaceId).gte("created_at", planStartedAt.toISOString()),
-    ]);
+  // ২. অ্যাক্টিভ ও চলতি মাসের চ্যাট গণনা
+  const [
+    { count: activeChats },
+    { count: usedChats }
+  ] = await Promise.all([
+    supabase
+      .from("conversations")
+      .select("id", { count: "exact", head: true })
+      .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+      .eq("status", "open"),
+    supabase
+      .from("conversations")
+      .select("id", { count: "exact", head: true })
+      .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+  ]);
 
-    return {
-            planName: activePlanName,
-            status: isExpired ? "Expired" : (billing?.status || "Active"),
-            renewsAt: renewsAtDate,
-            priceLabel: activePriceLabel,
-            
-            // Fixes for Customer Usage progress bar (Frontend expects these names)
-            customerLimit: billing?.token_limit || activeTokenLimit,
-            customersUsed: billing?.tokens_used || 0,
+  return {
+    meta_plan: billing?.meta_plan || "Grow Free",
+    meta_status: billing?.meta_status || "active",
+    meta_customers_limit: billing?.meta_customers_limit || 10,
+    meta_customers_used: billing?.meta_customers_used || 0,
+    
+    shopify_plan: billing?.shopify_plan || "Grow Free",
+    shopify_status: billing?.shopify_status || "active",
+    shopify_messages_limit: billing?.shopify_messages_limit || 100,
+    shopify_messages_used: billing?.shopify_messages_used || 0,
 
-            tokenLimit: billing?.token_limit || activeTokenLimit,
-            tokensUsed: billing?.tokens_used || 0,
-
-            activeChats: activeChats ?? 0,
-            chatsThisMonth: usedChats ?? 0,
-        };
+    activeChats: activeChats || 0,
+    chatsThisMonth: usedChats || 0
+  };
 }
 
-// User notun plan kinle database e update korar jonno notun function
-export async function updateBillingPlan(workspaceId, newPlanName, newLimit, newPriceLabel) {
-    const { data, error } = await supabase
-        .from('billing_accounts')
-        .upsert({ 
-            workspace_id: workspaceId, // Jodi database e org_id thake tobe ekhane org_id likhben
-            plan_name: newPlanName,
-            token_limit: newLimit,
-            price_label: newPriceLabel,
-            updated_at: new Date().toISOString()
-        }, { onConflict: 'workspace_id' }) // onConflict eo same
-        .select()
-        .single();
+async function updateBillingPlan(workspaceId, { provider, planName, limit, priceLabel }) {
+  let updateData = {};
 
-    assertNoError(error, "Failed to update billing plan");
-    return data;
+  if (provider === "shopify") {
+    updateData = {
+      shopify_plan: planName,
+      shopify_status: "active",
+      shopify_messages_limit: limit,
+      updated_at: new Date().toISOString()
+    };
+  } else {
+    updateData = {
+      meta_plan: planName,
+      meta_status: "active",
+      meta_customers_limit: limit,
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("billing_accounts")
+    .update(updateData)
+    .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+    .select()
+    .single();
+
+  assertNoError(error, "Failed to update billing plan");
+  return data;
 }
 
 async function getInvoices(workspaceId) {
   const { data, error } = await supabase
     .from("invoices")
     .select("*")
-    .eq("workspace_id", workspaceId)
+    .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
     .order("date", { ascending: false });
 
   assertNoError(error, "Failed to load invoices");
-  return (data ?? []).map((i) => ({ id: i.id, date: i.date, amountLabel: i.amount_label, pdfUrl: i.pdf_url }));
+  return (data || []).map((i) => ({
+    id: i.id,
+    date: i.date,
+    amountLabel: i.amount_label || `$${i.amount || 0}`,
+    pdfUrl: i.pdf_url
+  }));
 }
 
 export {

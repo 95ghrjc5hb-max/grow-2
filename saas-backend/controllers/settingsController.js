@@ -1,5 +1,6 @@
 import * as settingsService from "../services/settingsService.js";
-
+import * as shopifyService from "../services/shopifyService.js";
+import supabase from "../config/supabase.js";
 /**
  * settingsController
  * ------------------
@@ -183,7 +184,7 @@ export const getWebhookLogs = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-// ---- Billing & usage ----
+// --- Billing & Usage ---
 
 export const getBillingUsage = asyncHandler(async (req, res) => {
   const data = await settingsService.getBillingUsage(getWorkspaceId(req));
@@ -194,27 +195,62 @@ export const getInvoices = asyncHandler(async (req, res) => {
   const data = await settingsService.getInvoices(getWorkspaceId(req));
   res.json({ success: true, data });
 });
-export const updatePlan = asyncHandler(async (req, res) => {
-    const { planName } = req.body;
-    if (!planName) return res.status(400).json({ success: false, error: "Plan name is required" });
-    
-   
-    let limit = 30;
-    let priceLabel = "$0/mo";
-    const name = planName.toLowerCase();
 
-    if (name.includes("pro") || name.includes("29")) {
-        limit = 500;
-        priceLabel = "$29/mo";
-    } else if (name.includes("premium") || name.includes("59")) {
-        limit = 1200;
-        priceLabel = "$59/mo";
-    } else if (name.includes("unlimited") || name.includes("100") || name.includes("enterprise")) {
-        limit = 3000;
-        priceLabel = "$100/mo";
+export const updatePlan = asyncHandler(async (req, res) => {
+  const workspaceId = getWorkspaceId(req);
+  const { provider, planName, price } = req.body;
+
+  if (!planName) {
+    return res.status(400).json({ success: false, error: "Plan name is required" });
+  }
+
+  const name = planName.toLowerCase();
+
+  // 1. SHOPIFY STOREFRONT BILLING FLOW
+  if (provider === "shopify") {
+    // Fetch active Shopify credentials for the workspace
+    const { data: integration } = await supabase
+      .from("integrations")
+      .select("metadata, access_token, account_name, shop_domain")
+      .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+      .eq("platform", "shopify")
+      .maybeSingle();
+
+    const shopDomain =
+      integration?.shop_domain ||
+      integration?.account_name ||
+      integration?.metadata?.shop_domain ||
+      integration?.metadata?.shop;
+      
+    const accessToken =
+      integration?.access_token ||
+      integration?.metadata?.access_token;
+
+    if (!shopDomain || !accessToken) {
+      return res.status(400).json({
+        success: false,
+        error: "Shopify store is not connected to this workspace"
+      });
     }
-    
-   
-    const data = await settingsService.updateBillingPlan(getWorkspaceId(req), planName, limit, priceLabel);
-    res.json({ success: true, data });
+
+    const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+    const returnUrl = `${backendUrl}/api/v1/shopify/billing/callback?workspace_id=${workspaceId}&plan=${encodeURIComponent(planName)}`;
+
+    // Create recurring subscription via Shopify GraphQL API
+    const confirmationUrl = await shopifyService.createShopifySubscription(
+      shopDomain,
+      accessToken,
+      planName,
+      price || 15,
+      returnUrl
+    );
+
+    return res.json({ success: true, confirmationUrl });
+  }
+
+// 2. REJECT UNKNOWN PROVIDERS (Lemon Squeezy has its own dedicated controller)
+  return res.status(400).json({
+    success: false,
+    error: "Unsupported provider. For Meta Lemon Squeezy billing, use the lemon-squeezy endpoint."
+  });
 });

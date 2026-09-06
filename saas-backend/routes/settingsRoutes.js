@@ -52,5 +52,5 @@ router.get("/api-keys/webhook-logs", settingsController.getWebhookLogs);
 // -- Billing & Usage --
 router.get("/billing", settingsController.getBillingUsage);
 router.get("/billing/invoices", settingsController.getInvoices);
-router.post('/billing-usage/plan', settingsController.updatePlan);
+router.post("/billing/plan", settingsController.updatePlan);
 export default router;

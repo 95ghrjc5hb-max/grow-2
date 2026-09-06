@@ -22,6 +22,8 @@ import conversationRoutes from './routes/conversationRoutes.js';
 import { authenticateToken } from './middleware/authMiddleware.js'; 
 import stripeRoutes from './routes/stripeRoutes.js';
 import { handleStripeWebhook } from './controllers/stripeController.js';
+import lemonSqueezyRoutes from './routes/lemonSqueezyRoutes.js';
+import shopifyRoutes from './routes/shopifyRoutes.js';
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -64,12 +66,13 @@ app.post('/api/v1/stripe/webhook', express.raw({ type: 'application/json' }), ha
 // 2. Security headers (Placed after CORS)
 app.use(helmet());
 
-app.use(express.json({ 
-  limit: '10kb',
-  verify: (req, res, buf) => { 
-    req.rawBody = buf; 
-  } 
+app.use(express.json({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
 }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(morgan('dev')); 
 
 const limiter = rateLimit({
@@ -380,9 +383,11 @@ app.use('/api/v1/webhooks', webhookRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 app.use('/api/widget', express.static(path.join(__dirname, 'public/widget')));
-
+app.use('/api/v1/billing/lemon-squeezy', lemonSqueezyRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/stripe', stripeRoutes);
+app.use('/api/v1/billing/lemon-squeezy', lemonSqueezyRoutes);
+app.use('/api/v1/shopify', shopifyRoutes);
 // Any request that doesn't match the API routes will load the frontend
 app.get(/(.*)/, (req, res) => {
   if (req.path.startsWith('/api')) {

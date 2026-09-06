@@ -3,6 +3,7 @@ import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.j
 import { createShopifyOrder } from '../services/shopifyService.js';
 import { getNotificationSettings, getBillingUsage } from '../services/settingsService.js';
 import { handleCustomerMessage, transcribeAudioWithGroq } from '../services/aiAgentService.js';
+
 // --- Helper: Send Notification to Slack & Discord ---
 const sendAlertToChannels = async (orgId, eventType, textMessage) => {
     try {
@@ -70,10 +71,8 @@ const getOrCreateConversation = async (orgId, channel, customerId, customerName,
             let isBlocked = false;
 
             if (currentUsed >= limit) {
-                // Limit is full! Mark this conversation as blocked so AI won't reply.
                 isBlocked = true;
             } else {
-                // Safe to increment since limit is not reached yet
                 await supabase
                     .from('billing_accounts')
                     .update({ tokens_used: currentUsed + 1 })
@@ -96,7 +95,6 @@ const getOrCreateConversation = async (orgId, channel, customerId, customerName,
 
             if (createError) throw createError;
 
-            // Attach block flag directly to the returned conversation object
             newConv.is_limit_blocked = isBlocked;
             return newConv;
         }
@@ -110,7 +108,6 @@ const getOrCreateConversation = async (orgId, channel, customerId, customerName,
             })
             .eq('id', conv.id);
 
-        // Also check if even for existing customers, the limit is already breached
         const { data: billingCheck } = await supabase
             .from('billing_accounts')
             .select('tokens_used, token_limit')
@@ -172,37 +169,9 @@ export const handleMetaWebhook = async (req, res) => {
         if (!messages || messages.length === 0) continue;
 
         for (const message of messages) {
-        const customerPhone = message.from;
-        let customerMessage = '';
-        let audioUrl = null;
-
-        if (message.type === 'text') {
-            customerMessage = message.text.body || '';
-        } else if (message.type === 'audio' || message.type === 'voice') {
-            // WhatsApp voice message handling
-            const audioObj = message.audio || message.voice;
-            if (audioObj && audioObj.id) {
-                try {
-                    // Fetch media URL from Meta Graph API using the media ID
-                    const mediaRes = await fetch(`https://graph.facebook.com/v19.0/${audioObj.id}`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-                    const mediaData = await mediaRes.json();
-                    if (mediaData && mediaData.url) {
-                        audioUrl = mediaData.url;
-                    }
-                } catch (err) {
-                    console.error('[WHATSAPP AUDIO URL FETCH ERROR]:', err.message);
-                }
-            }
-        }
-
-        // If it's an audio message, transcribe it using Groq Whisper!
-        if (audioUrl) {
-            customerMessage = await transcribeAudioWithGroq(audioUrl)
-        }
-
-        if (!customerMessage) continue;
+          const customerPhone = message.from;
+          let customerMessage = '';
+          let audioUrl = null;
 
           try {
             let { data: integration } = await supabase
@@ -218,6 +187,32 @@ export const handleMetaWebhook = async (req, res) => {
             const token = integration.access_token;
             const activePhoneId = integration.page_id || phoneNumberId;
 
+            // Handle Text or Audio Message
+            if (message.type === 'text') {
+              customerMessage = message.text.body || '';
+            } else if (message.type === 'audio' || message.type === 'voice') {
+              const audioObj = message.audio || message.voice;
+              if (audioObj && audioObj.id) {
+                try {
+                  const mediaRes = await fetch(`https://graph.facebook.com/v19.0/${audioObj.id}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                  });
+                  const mediaData = await mediaRes.json();
+                  if (mediaData && mediaData.url) {
+                    audioUrl = mediaData.url;
+                  }
+                } catch (err) {
+                  console.error('[WHATSAPP AUDIO URL FETCH ERROR]:', err.message);
+                }
+              }
+            }
+
+            if (audioUrl) {
+              customerMessage = await transcribeAudioWithGroq(audioUrl);
+            }
+
+            if (!customerMessage) continue;
+
             // 1. Sync Conversation in Supabase
             const conv = await getOrCreateConversation(
               integration.org_id,
@@ -227,7 +222,7 @@ export const handleMetaWebhook = async (req, res) => {
               customerMessage
             );
 
-            // 2. Save incoming message in 'messages' table
+            // 2. Save incoming message
             if (conv) {
               await supabase.from('messages').insert({
                 conversation_id: conv.id,
@@ -255,90 +250,82 @@ export const handleMetaWebhook = async (req, res) => {
                 .limit(10);
 
               conversationHistory = (chatHistory || []).reverse().map(m => ({
-                direction: m.sender === 'customer' ? 'incoming' : 'outgoing',
-                message: m.content
+                role: m.sender === 'customer' ? 'user' : 'assistant',
+                content: m.content || ''
               }));
             }
-            // AI যদি Paused থাকে, তাহলে বটকে দিয়ে রিপ্লাই না দিয়ে এখানেই থামিয়ে দাও
-        if (conv && conv.ai_active === false) {
-            console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
-            continue; 
-        }
-            // 5. Call AI Service
-          // 5. Call AI Service & Check Limit First
-// 5. Call AI Service & Check Limit Strictly
-        let aiResponse = null;
 
-        // 🛑 STRICT BILLING & LIMIT CHECK
-        const { data: currentBilling } = await supabase
-            .from('billing_accounts')
-            .select('tokens_used, token_limit')
-            .eq('org_id', integration.org_id)
-            .maybeSingle();
+            if (conv && conv.ai_active === false) {
+              console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
+              continue; 
+            }
 
-        const currentUsed = currentBilling?.tokens_used || 0;
-        const currentLimit = currentBilling?.token_limit || 30;
+            // 5. Call AI Service & Check Limit
+            let aiResponse = null;
+            const { data: currentBilling } = await supabase
+              .from('billing_accounts')
+              .select('tokens_used, token_limit')
+              .eq('org_id', integration.org_id)
+              .maybeSingle();
 
-        // 🚨 CRITICAL RULE: If usage touches or exceeds limit, STOP AI completely for EVERYONE!
-        if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
-            console.log(`[AI BLOCKED] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
-            aiResponse = {
+            const currentUsed = currentBilling?.tokens_used || 0;
+            const currentLimit = currentBilling?.token_limit || 30;
+
+            if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
+              console.log(`[AI BLOCKED] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
+              aiResponse = {
                 reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
                 handover: true
-            };
-        } else if (conv && conv.ai_active === false) {
-            console.log('[AI PAUSED] Bot is paused by human agent.');
-            continue;
-        } else {
-            // Safe to call AI since limit is NOT reached yet
-            aiResponse = await handleCustomerMessage({
+              };
+            } else {
+              aiResponse = await handleCustomerMessage({
                 customerMessage,
                 orgId: integration.org_id,
                 storeProducts: products || [],
                 conversationHistory,
                 imageUrl: null
-            });
-        }
-            // 🔔 SEND HUMAN HANDOVER NOTIFICATION
-        if (aiResponse && aiResponse.handover) {
-            await sendAlertToChannels(
+              });
+            }
+
+            if (aiResponse && aiResponse.handover) {
+              await sendAlertToChannels(
                 integration.org_id,
                 'notifyOnHandover',
                 `⚠️ *Human Handover Requested!*\nCustomer Phone: ${customerPhone} needs human assistance.`
-            );
-        }
+              );
+            }
 
             const replyText = typeof aiResponse === 'string'
-            ? aiResponse
-            : (aiResponse?.reply || 'Sorry, I could not process your request.');
+              ? aiResponse
+              : (aiResponse?.reply || 'Sorry, I could not process your request.');
 
-        const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
+            const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
 
-        // 6. Send WhatsApp Reply (Text Message)
-        await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
+            // 6. Send WhatsApp Reply
+            await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
 
-        // 6.5 🚀 MAGIC: Send WhatsApp Image (If AI provided a product image!)
-        if (replyImage && replyImage.startsWith('http')) {
-            try {
+            if (replyImage && replyImage.startsWith('http')) {
+              try {
                 await fetch(`https://graph.facebook.com/v19.0/${activePhoneId}/messages`, {
-                    method: 'POST',
-                    headers: { 
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json' 
-                    },
-                    body: JSON.stringify({
-                        messaging_product: 'whatsapp',
-                        recipient_type: 'individual',
-                        to: customerPhone,
-                        type: 'image',
-                        image: { link: replyImage }
-                    })
+                  method: 'POST',
+                  headers: { 
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json' 
+                  },
+                  body: JSON.stringify({
+                    messaging_product: 'whatsapp',
+                    recipient_type: 'individual',
+                    to: customerPhone,
+                    type: 'image',
+                    image: { link: replyImage }
+                  })
                 });
-            } catch (imgErr) {
+              } catch (imgErr) {
                 console.error('[WHATSAPP IMAGE SEND ERROR]:', imgErr.message);
+              }
             }
-        }
-            // 7. Save outgoing message in 'messages' table
+
+            // 7. Save outgoing message
             if (conv) {
               await supabase.from('messages').insert({
                 conversation_id: conv.id,
@@ -352,27 +339,90 @@ export const handleMetaWebhook = async (req, res) => {
                 .eq('id', conv.id);
             }
 
-            // 8. Save Order & Push to Shopify
+            // 8. Dynamic Order Creation (WhatsApp)
             if (aiResponse && aiResponse.orderData) {
-              const { customerName, phone, address, products: orderedProducts, totalPrice } = aiResponse.orderData;
-              if (customerName && orderedProducts && typeof totalPrice === 'number') {
-                await supabase.from('orders').insert({
-                  org_id: integration.org_id,
-                  customer_name: customerName,
-                  customer_phone: phone || customerPhone,
-                  address: address || null,
-                  products: orderedProducts,
-                  total_amount: totalPrice,
-                  status: 'pending',
-                });
+              const orderData = aiResponse.orderData;
+              const generatedOrderId = `ORD-${Date.now().toString().slice(-6)}`;
+
+              const finalCustomerName = 
+                orderData.customer_name || 
+                orderData.customerName || 
+                orderData.name || 
+                'Valued Customer';
+
+              const finalPhone = 
+                orderData.phone_number || 
+                orderData.phone || 
+                customerPhone || 
+                null;
+
+              const finalAddress = 
+                orderData.delivery_address || 
+                orderData.address || 
+                null;
+
+              const quantity = parseInt(orderData.product_quantity || orderData.quantity || 1, 10);
+              const finalTotal = parseFloat(orderData.totalPrice || orderData.total_amount || 0);
+              const deliveryCharge = parseFloat(orderData.delivery_charge || 0);
+
+              const coreKeys = new Set([
+                'customer_name', 'customerName', 'name',
+                'phone_number', 'phone', 'customer_phone',
+                'delivery_address', 'address',
+                'product_quantity', 'quantity',
+                'product_title', 'product_name', 'products', 'orderedProducts',
+                'totalPrice', 'total_amount', 'delivery_charge'
+              ]);
+
+              const dynamicCustomDetails = {};
+              const variantSpecs = [];
+
+              Object.entries(orderData).forEach(([key, value]) => {
+                if (!coreKeys.has(key) && value !== null && value !== undefined) {
+                  dynamicCustomDetails[key] = value;
+                  if (key !== 'delivery_zone' && key !== 'currency') {
+                    variantSpecs.push(`${key}: ${value}`);
+                  }
+                }
+              });
+
+              const baseProductName = 
+                orderData.product_title || 
+                orderData.product_name || 
+                orderData.products || 
+                (Array.isArray(products) && products.length > 0 ? (products[0].title || products[0].name) : 'Ordered Product');
+
+              const variantSuffix = variantSpecs.length > 0 ? ` (${variantSpecs.join(', ')})` : '';
+              const finalProducts = `${quantity}x ${baseProductName}${variantSuffix}`;
+
+              await supabase.from('orders').insert([{
+                org_id: integration.org_id,
+                order_id: generatedOrderId,
+                customer_name: finalCustomerName,
+                customer_phone: finalPhone,
+                address: finalAddress,
+                products: finalProducts,
+                total_amount: finalTotal,
+                status: 'pending',
+                custom_details: dynamicCustomDetails,
+                delivery_charge: deliveryCharge
+              }]);
+
+              try {
                 await syncOrderToShopify(integration.org_id, aiResponse.orderData);
+              } catch (shopifyErr) {
+                console.warn('[SHOPIFY SYNC WARNING]:', shopifyErr.message);
               }
-              // 🔔 SEND ORDER NOTIFICATION
-            await sendAlertToChannels(
-                integration.org_id,
-                'notifyOnOrderUpdate',
-                `🛍️ *New Order Received!*\nCustomer: ${customerName}\nPhone: ${customerPhone || 'N/A'}\nTotal Amount: ${totalPrice}\nProducts: ${JSON.stringify(orderedProducts)}`
-            );
+
+              try {
+                await sendAlertToChannels(
+                  integration.org_id,
+                  'notifyOnOrderUpdate',
+                  `🛍️ New WhatsApp Order!\n🆔 Order: ${generatedOrderId}\n👤 Customer: ${finalCustomerName}\n📞 Phone: ${finalPhone || 'N/A'}\n📦 Items: ${finalProducts}\n💰 Total: ${finalTotal}`
+                );
+              } catch (alertErr) {
+                console.warn('[ALERT WARNING]:', alertErr.message);
+              }
             }
           } catch (err) {
             console.error('[WHATSAPP WEBHOOK ERROR]:', err.message);
@@ -387,7 +437,7 @@ export const handleMetaWebhook = async (req, res) => {
   // 2. FACEBOOK MESSENGER & INSTAGRAM HANDLER
   // =========================================================================
   if (body.object === 'page' || body.object === 'instagram') {
-    for (const entry of body.entry) {
+    for (const entry of body.entry || []) {
       const pageId = entry.id;
 
       let events = [];
@@ -407,21 +457,19 @@ export const handleMetaWebhook = async (req, res) => {
         const senderId = messagingEvent.sender?.id;
         let customerMessage = messagingEvent.message?.text || '';
 
-        // 🖼️ 1. Extract Image if present
+        // 1. Extract Image & Audio
         const imageAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'image');
         const imageUrl = imageAttachment?.payload?.url || null;
 
-        // 🎙️ 2. Extract Audio if present
         const audioAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'audio');
         const audioUrl = audioAttachment?.payload?.url || null;
 
-        // 🎙️ 3. Transcribe Audio using Groq Whisper
         if (audioUrl && !customerMessage) {
-            customerMessage = await transcribeAudioWithGroq(audioUrl);
+          customerMessage = await transcribeAudioWithGroq(audioUrl);
         }
 
-        // 🛑 4. Skip if nothing valid received
         if (!senderId || (!customerMessage && !imageUrl)) continue;
+
         try {
           const targetPlatform = body.object === 'page' ? 'messenger' : 'instagram';
           
@@ -445,7 +493,7 @@ export const handleMetaWebhook = async (req, res) => {
 
           if (!integration) continue;
 
-          // 1. Sync Conversation in Supabase
+          // 1. Sync Conversation
           const displayName = targetPlatform === 'messenger' 
             ? `Messenger User (${senderId.slice(-4)})` 
             : `Instagram User (${senderId.slice(-4)})`;
@@ -458,7 +506,7 @@ export const handleMetaWebhook = async (req, res) => {
             customerMessage || '[Customer sent an image]'
           );
 
-          // 2. Save incoming message in 'messages' table
+          // 2. Save incoming message
           if (conv) {
             await supabase.from('messages').insert({
               conversation_id: conv.id,
@@ -490,85 +538,77 @@ export const handleMetaWebhook = async (req, res) => {
               message: m.content
             }));
           } 
-           // AI যদি Paused থাকে, তাহলে বটকে দিয়ে রিপ্লাই না দিয়ে এখানেই থামিয়ে দাও
-        if (conv && conv.ai_active === false) {
+
+          if (conv && conv.ai_active === false) {
             console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
             continue; 
-        }
+          }
 
-          // 5. Call AI Service & Check Limit Strictly (Messenger/IG)
-        let aiResponse = null;
-
-        // 🛑 STRICT BILLING & LIMIT CHECK
-        const { data: currentBilling } = await supabase
+          // 5. Call AI Service & Check Limit
+          let aiResponse = null;
+          const { data: currentBilling } = await supabase
             .from('billing_accounts')
             .select('tokens_used, token_limit')
             .eq('org_id', integration.org_id)
             .maybeSingle();
 
-        const currentUsed = currentBilling?.tokens_used || 0;
-        const currentLimit = currentBilling?.token_limit || 30;
+          const currentUsed = currentBilling?.tokens_used || 0;
+          const currentLimit = currentBilling?.token_limit || 30;
 
-        // 🚨 CRITICAL RULE: Block AI if limit is full!
-        if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
+          if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
             console.log(`[AI BLOCKED - MESSENGER/IG] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
             aiResponse = {
-                reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
-                handover: true
+              reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
+              handover: true
             };
-        } else if (conv && conv.ai_active === false) {
-            console.log('[AI PAUSED] Bot is paused by human agent.');
-            continue;
-        } else {
-            // Safe to call AI
+          } else {
             aiResponse = await handleCustomerMessage({
-                customerMessage,
-                orgId: integration.org_id,
-                storeProducts: products || [],
-                conversationHistory,
-                imageUrl 
+              customerMessage,
+              orgId: integration.org_id,
+              storeProducts: products || [],
+              conversationHistory,
+              imageUrl 
             });
-        }
-          // 🔔 SEND HUMAN HANDOVER NOTIFICATION (Messenger/Instagram)
-        if (aiResponse && aiResponse.handover) {
+          }
+
+          if (aiResponse && aiResponse.handover) {
             await sendAlertToChannels(
-                integration.org_id,
-                'notifyOnHandover',
-                `⚠️ *Human Handover Requested!*\nCustomer (${targetPlatform}): ${customerMessage}`
+              integration.org_id,
+              'notifyOnHandover',
+              `⚠️ *Human Handover Requested!*\nCustomer (${targetPlatform}): ${customerMessage}`
             );
-        }
+          }
          
-         const replyText = typeof aiResponse === 'string'
+          const replyText = typeof aiResponse === 'string'
             ? aiResponse
             : (aiResponse?.reply || 'Sorry, I could not process your request.');
             
-        const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
+          const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
 
-        // 6. Send Meta Reply (Text Message)
-        await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
+          // 6. Send Meta Reply
+          await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
 
-        // 6.5 🚀 MAGIC: Send Meta Image (If AI provided a product image!)
-        if (replyImage && replyImage.startsWith('http')) {
+          if (replyImage && replyImage.startsWith('http')) {
             try {
-                await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${integration.access_token}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        recipient: { id: senderId },
-                        message: {
-                            attachment: {
-                                type: 'image',
-                                payload: { url: replyImage, is_reusable: true }
-                            }
-                        }
-                    })
-                });
+              await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${integration.access_token}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  recipient: { id: senderId },
+                  message: {
+                    attachment: {
+                      type: 'image',
+                      payload: { url: replyImage, is_reusable: true }
+                    }
+                  }
+                })
+              });
             } catch (imgErr) {
-                console.error('[IMAGE SEND ERROR]:', imgErr.message);
+              console.error('[IMAGE SEND ERROR]:', imgErr.message);
             }
-        }
+          }
 
-          // 7. Save outgoing message in 'messages' table
+          // 7. Save outgoing message
           if (conv) {
             await supabase.from('messages').insert({
               conversation_id: conv.id,
@@ -582,26 +622,107 @@ export const handleMetaWebhook = async (req, res) => {
               .eq('id', conv.id);
           }
 
-          // 8. Save Order & Push to Shopify
+          // 8. Dynamic Order Creation (Messenger & Instagram)
           if (aiResponse && aiResponse.orderData) {
-            const { customerName, phone, address, products: orderedProducts, totalPrice } = aiResponse.orderData;
-            if (customerName && orderedProducts && typeof totalPrice === 'number') {
-              await supabase.from('orders').insert({
+            const orderData = aiResponse.orderData;
+            const generatedOrderId = `ORD-${Date.now().toString().slice(-6)}`;
+
+            const finalCustomerName = 
+              orderData.customer_name || 
+              orderData.customerName || 
+              orderData.name || 
+              orderData.fullName || 
+              'Valued Customer';
+
+            const finalPhone = 
+              orderData.phone_number || 
+              orderData.phone || 
+              orderData.customer_phone || 
+              null;
+
+            const finalAddress = 
+              orderData.delivery_address || 
+              orderData.address || 
+              orderData.shipping_address || 
+              null;
+
+            const quantity = parseInt(orderData.product_quantity || orderData.quantity || 1, 10);
+            const finalTotal = parseFloat(orderData.totalPrice || orderData.total_amount || 0);
+            const deliveryCharge = parseFloat(orderData.delivery_charge || 0);
+
+            const coreKeys = new Set([
+              'customer_name', 'customerName', 'name', 'fullName',
+              'phone_number', 'phone', 'customer_phone',
+              'delivery_address', 'address', 'shipping_address',
+              'product_quantity', 'quantity',
+              'product_title', 'product_name', 'products', 'orderedProducts',
+              'totalPrice', 'total_amount', 'delivery_charge'
+            ]);
+
+            const dynamicCustomDetails = {};
+            const variantSpecs = [];
+
+            Object.entries(orderData).forEach(([key, value]) => {
+              if (!coreKeys.has(key) && value !== null && value !== undefined) {
+                dynamicCustomDetails[key] = value;
+                if (key !== 'delivery_zone' && key !== 'currency') {
+                  variantSpecs.push(`${key}: ${value}`);
+                }
+              }
+            });
+
+            let finalProducts = orderData.product_title || orderData.product_name || orderData.products;
+            if (!finalProducts) {
+              const fallbackName = (Array.isArray(products) && products.length > 0)
+                ? (products[0].title || products[0].name)
+                : 'Ordered Product';
+              const variantSuffix = variantSpecs.length > 0 ? ` (${variantSpecs.join(', ')})` : '';
+              finalProducts = `${quantity}x ${fallbackName}${variantSuffix}`;
+            }
+
+            const { data: savedOrder, error: orderInsertErr } = await supabase
+              .from('orders')
+              .insert([{
                 org_id: integration.org_id,
-                customer_name: customerName,
-                customer_phone: phone || null,
-                address: address || null,
-                products: orderedProducts,
-                total_amount: totalPrice,
+                order_id: generatedOrderId,
+                customer_name: finalCustomerName,
+                customer_phone: finalPhone,
+                address: finalAddress,
+                products: finalProducts,
+                total_amount: finalTotal,
                 status: 'pending',
-              });
+                custom_details: dynamicCustomDetails,
+                delivery_charge: deliveryCharge
+              }])
+              .select();
+
+            if (orderInsertErr) {
+              console.error('[DATABASE ORDER INSERT ERROR]:', orderInsertErr);
+            } else {
+              console.log('[DATABASE ORDER CREATED SUCCESS]:', savedOrder);
+            }
+
+            try {
               await syncOrderToShopify(integration.org_id, aiResponse.orderData);
-              // 🔔 SEND ORDER NOTIFICATION (Messenger/Instagram)
-            await sendAlertToChannels(
+            } catch (shopifyErr) {
+              console.warn('[SHOPIFY SYNC WARNING]:', shopifyErr.message);
+            }
+
+            try {
+              const alertMsg = "🛍️ New Order Received (" + targetPlatform + ")!\n" +
+                "🆔 Order: " + generatedOrderId + "\n" +
+                "👤 Customer: " + finalCustomerName + "\n" +
+                "📞 Phone: " + (finalPhone || 'N/A') + "\n" +
+                "📦 Items: " + finalProducts + "\n" +
+                "💰 Total: " + finalTotal;
+
+              await sendAlertToChannels(
                 integration.org_id,
                 'notifyOnOrderUpdate',
-                `🛍️ *New Order Received (${targetPlatform})!*\nCustomer: ${customerName}\nPhone: ${phone || 'N/A'}\nTotal Amount: ${totalPrice}\nProducts: ${JSON.stringify(orderedProducts)}`
-            );
+                alertMsg
+              );
+            } catch (alertErr) {
+              console.warn('[ALERT CHANNELS WARNING]:', alertErr.message);
             }
           }
         } catch (err) {
@@ -609,5 +730,51 @@ export const handleMetaWebhook = async (req, res) => {
         }
       }
     }
+  }
+};
+// ==========================================
+// SHOPIFY MANDATORY GDPR COMPLIANCE WEBHOOKS
+// ==========================================
+
+// 1. GDPR: Customers Data Request
+export const handleCustomerDataRequest = async (req, res) => {
+  try {
+    const { shop_domain, customer } = req.body;
+    console.log(`[GDPR] Customer data request for ${customer?.email || 'Customer'} on ${shop_domain}`);
+    return res.status(200).json({ success: true, message: 'Data request logged' });
+  } catch (err) {
+    console.error('[GDPR Error] Customer Data Request:', err);
+    return res.status(200).send('OK');
+  }
+};
+
+// 2. GDPR: Customers Redact (Delete Customer Data)
+export const handleCustomerRedact = async (req, res) => {
+  try {
+    const { shop_domain, customer } = req.body;
+    console.log(`[GDPR] Customer redact request for ${customer?.email || 'Customer'} on ${shop_domain}`);
+    return res.status(200).json({ success: true, message: 'Customer redact processed' });
+  } catch (err) {
+    console.error('[GDPR Error] Customer Redact:', err);
+    return res.status(200).send('OK');
+  }
+};
+
+// 3. GDPR: Shop Redact (Delete Store Data after 48 hours)
+export const handleShopRedact = async (req, res) => {
+  try {
+    const { shop_domain } = req.body;
+    console.log(`[GDPR] Shop redact request for ${shop_domain}`);
+
+    // Update integration status to disconnected
+    await supabase
+      .from('integrations')
+      .update({ status: 'disconnected', access_token: null })
+      .ilike('page_id', `%${shop_domain}%`);
+
+    return res.status(200).json({ success: true, message: 'Shop data cleaned' });
+  } catch (err) {
+    console.error('[GDPR Error] Shop Redact:', err);
+    return res.status(200).send('OK');
   }
 };

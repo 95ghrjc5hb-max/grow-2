@@ -74,3 +74,56 @@ export const updateOrderStatus = async (req, res) => {
     });
   }
 };
+// 3. Edit Full Order Details (Save Changes)
+export const updateOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      customer_name,
+      customer_phone,
+      address,
+      products,
+      total_amount,
+      status
+    } = req.body;
+
+    const userId = req.user?.id || req.user?.userId || req.user?._sub || req.user?.user_id;
+
+    if (!userId || userId === 'undefined') {
+      return res.status(401).json({
+        success: false,
+        error: "Unauthorized user action"
+      });
+    }
+
+    const updatePayload = {
+      ...(customer_name !== undefined && { customer_name }),
+      ...(customer_phone !== undefined && { customer_phone }),
+      ...(address !== undefined && { address }),
+      ...(products !== undefined && { products }),
+      ...(total_amount !== undefined && { total_amount: Number(total_amount) || 0 }),
+      ...(status !== undefined && { status }),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase
+      .from('orders')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('org_id', userId)
+      .select();
+
+    if (error) throw error;
+
+    return res.status(200).json({
+      success: true,
+      data: data?.[0] || null
+    });
+  } catch (error) {
+    console.error('[ORDER UPDATE ERROR]:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};

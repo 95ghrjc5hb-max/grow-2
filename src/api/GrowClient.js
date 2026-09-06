@@ -2,14 +2,7 @@ import axios from "axios";
 
 /**
  * GrowClient
- * -----------
  * Thin wrapper around axios for talking to the saas-backend API.
- *
- * NOTE: I don't have your existing GrowClient.js in context, so this file
- * assumes the common shape (axios instance + bearer token from storage).
- * If your real file already has a different auth mechanism (e.g. Supabase
- * session, cookie-based auth), keep your existing `api` instance and just
- * paste the `settings` object at the bottom into it.
  */
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1";
@@ -19,9 +12,7 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-// Attach the auth token (and active workspace, if the user belongs to more
-// than one) to every outgoing request.
-// Attach the auth token...
+// Attach the auth token and workspace id to outgoing requests
 api.interceptors.request.use((config) => {
   let token = null;
 
@@ -32,11 +23,11 @@ api.interceptors.request.use((config) => {
   if (!token) {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && key.includes('-auth-token')) {
+      if (key && key.includes("-auth-token")) {
         try {
           const sbData = JSON.parse(localStorage.getItem(key));
           token = sbData?.access_token || sbData?.currentSession?.access_token;
-          break; // Stop loop once token is found
+          break;
         } catch (e) {
           console.error("Error parsing Supabase token:", e);
         }
@@ -57,18 +48,14 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-
-
-// Normalize errors so components can rely on `err.message` +
-// `err.status` instead of digging into the axios error shape.
+// Response interceptor for error normalization
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const status = error.response?.status;
-    const message = error.response?.data?.error || error.message || "Something went wrong";
+    const message = error.response?.data?.error || error.response?.data?.message || error.message || "Something went wrong";
 
     if (status === 401) {
-      // Session expired / invalid token â€” force re-auth.
       localStorage.removeItem("token");
       window.dispatchEvent(new CustomEvent("grow:unauthorized"));
     }
@@ -77,13 +64,9 @@ api.interceptors.response.use(
   }
 );
 
-/**
- * All `/api/v1/settings/*` endpoints, grouped by section.
- * Every component in components/settings/ talks to the backend only
- * through this object â€” never calls axios directly.
- */
+// All /api/v1/settings/* endpoints
 export const settings = {
-  // ---- General profile ----
+  // General profile
   getProfile: () => api.get("/settings/profile"),
   updateProfile: (payload) => api.patch("/settings/profile", payload),
   changePassword: (payload) => api.post("/settings/profile/password", payload),
@@ -91,17 +74,17 @@ export const settings = {
   getSessions: () => api.get("/settings/profile/sessions"),
   revokeSession: (sessionId) => api.delete(`/settings/profile/sessions/${sessionId}`),
 
-  // ---- Store / workspace ----
-  getWorkspace: () => api.get("/settings/workspace"),
-  updateWorkspace: (payload) => api.patch("/settings/workspace", payload),
+  // Store / workspace
+  getWorkspaces: () => api.get("/settings/workspace"),
+  updateWorkspaces: (payload) => api.patch("/settings/workspace", payload),
   getStoreConnection: () => api.get("/settings/workspace/store"),
 
-  // ---- AI agent guardrails ----
+  // AI agent guardrails
   getAIAgentConfig: () => api.get("/settings/ai-agent"),
   updateAIAgentConfig: (payload) => api.patch("/settings/ai-agent", payload),
   getAvailableModels: () => api.get("/settings/ai-agent/models"),
 
-  // ---- Team & escalations ----
+  // Team & escalations
   getTeamMembers: () => api.get("/settings/team"),
   inviteTeamMember: (payload) => api.post("/settings/team/invite", payload),
   updateTeamMember: (memberId, payload) => api.patch(`/settings/team/${memberId}`, payload),
@@ -109,60 +92,71 @@ export const settings = {
   getEscalationRules: () => api.get("/settings/team/escalation-rules"),
   updateEscalationRules: (payload) => api.patch("/settings/team/escalation-rules", payload),
 
-  // ---- Integrations / channels ----
+  // Integrations / channels
   getIntegrations: () => api.get("/settings/integrations"),
   connectIntegration: (provider, payload) => api.post(`/settings/integrations/${provider}/connect`, payload),
   disconnectIntegration: (provider) => api.post(`/settings/integrations/${provider}/disconnect`),
 
-  // ---- Notifications ----
+  // Notifications
   getNotificationSettings: () => api.get("/settings/notifications"),
   updateNotificationSettings: (payload) => api.patch("/settings/notifications", payload),
   testWebhook: (channel) => api.post("/settings/notifications/test", { channel }),
 
-  // ---- API keys & webhooks ----
+  // API keys & webhooks
   getApiKeys: () => api.get("/settings/api-keys"),
   createApiKey: (label) => api.post("/settings/api-keys", { label }),
   revokeApiKey: (keyId) => api.delete(`/settings/api-keys/${keyId}`),
   getWebhookLogs: (params) => api.get("/settings/api-keys/webhook-logs", { params }),
 
-  // ---- Billing & usage ----
+  // API keys & webhooks
+  getApiKeys: () => api.get("/settings/api-keys"),
+  createApiKey: (label) => api.post("/settings/api-keys", { label }),
+  revokeApiKey: (keyId) => api.delete(`/settings/api-keys/${keyId}`),
+  getWebhookLogs: (params) => api.get("/settings/api-keys/webhook-logs", { params }),
+
+  // Billing & usage
   getBillingUsage: () => api.get("/settings/billing"),
   getInvoices: () => api.get("/settings/billing/invoices"),
-  updatePlan: (planName) => api.post("/stripe/create-checkout", { planName }),
+  
+  // Lemon Squeezy (Meta Suite) Billing
+  updateMetaPlan: (payload) => api.post("/billing/lemon-squeezy/create-checkout", payload),
+  
+  // Shopify Billing
+  updateShopifyPlan: (payload) => api.post("/shopify/billing/subscribe", payload)
 };
+
 
 // Backward compatibility for existing app components
 export const Grow = {
   auth: {
     login: async (email, password) => {
-      const res = await api.post('/auth/login', { email, password });
-   if (res?.token) {
-   localStorage.setItem('token', res.token); 
-   }
+      const res = await api.post("/auth/login", { email, password });
+      if (res?.token) {
+        localStorage.setItem("token", res.token);
+      }
       return res;
     },
     signup: async (email, password) => {
-      return await api.post('/auth/signup', { email, password });
-    }
+      return await api.post("/auth/signup", { email, password });
+    },
   },
   entities: {
     Conversation: {
-      list: () => api.get('/conversations'),
-      update: (id, payload) => api.patch(`/conversations/${id}`, payload)
+      list: () => api.get("/conversations"),
+      update: (id, payload) => api.patch(`/conversations/${id}`, payload),
     },
     Orders: {
-      list: () => api.get('/orders')
+      list: () => api.get("/orders"),
     },
     Channel: {
-      list: () => api.get('/channels')
-    }
+      list: () => api.get("/channels"),
+    },
   },
   BotConfig: {
-    list: () => api.get('/bot-config'),
-    create: (payload) => api.post('/bot-config', payload),
-    update: (id, payload) => api.patch(`/bot-config/${id}`, payload)
-  }
+    list: () => api.get("/bot-config"),
+    create: (payload) => api.post("/bot-config", payload),
+    update: (id, payload) => api.patch(`/bot-config/${id}`, payload),
+  },
 };
-
 
 export default api;

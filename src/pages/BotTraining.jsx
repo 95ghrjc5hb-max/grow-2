@@ -35,6 +35,9 @@ export default function BotTraining() {
     model: "llama-3.1-8b-instant",
     api_key: "",
     system_prompt: "",
+    order_capture_fields: [],
+    delivery_rules: [],
+    currency_symbol: "$",
   });
 
   // 1. Fetch Products & Bot Config from Supabase on load
@@ -79,16 +82,19 @@ export default function BotTraining() {
         setProducts(supaProds || []);
 
         // Fetch Bot Config
-        const { data: configs } = await supabase.from("bot_configs").select("*").limit(1);
-        if (configs && configs.length > 0) {
-          setBotConfig(configs[0]);
-          setConfigForm({
-            provider: configs[0].llm_provider || "Groq Cloud",
-            model: configs[0].model_name || "llama-3.1-8b-instant",
-            api_key: configs[0].api_key || "",
-            system_prompt: configs[0].system_prompt || "",
-          });
-        }
+      const { data: configs } = await supabase.from("bot_configs").select("*").limit(1);
+      if (configs && configs.length > 0) {
+        setBotConfig(configs[0]);
+        setConfigForm({
+          provider: configs[0].llm_provider || "Groq Cloud",
+          model: configs[0].model_name || "llama-3.1-8b-instant",
+          api_key: configs[0].api_key || "",
+          system_prompt: configs[0].system_prompt || "",
+          order_capture_fields: configs[0].order_capture_fields || [],
+          delivery_rules: configs[0].delivery_rules || [],
+          currency_symbol: configs[0].currency_symbol || "$",
+        });
+      }
       } catch (error) {
         console.error("BotTraining fetch error:", error);
       } finally {
@@ -209,15 +215,18 @@ export default function BotTraining() {
     setShowModal(true);
   };
 
-  const handleSaveConfig = async (formData) => { 
+  const handleSaveConfig = async (formData) => {
     try {
-        const payload = {
-            llm_provider: formData.provider,
-            model_name: formData.model,
-            api_key: formData.api_key,
-            system_prompt: formData.system_prompt, 
-            org_id: userOrgId,
-        };
+      const payload = {
+        llm_provider: formData.provider,
+        model_name: formData.model,
+        api_key: formData.api_key,
+        system_prompt: formData.system_prompt,
+        order_capture_fields: formData.order_capture_fields || [],
+        delivery_rules: formData.delivery_rules || [],
+        currency_symbol: formData.currency_symbol || "$",
+        org_id: userOrgId,
+      };
 
       if (botConfig && botConfig.id) {
         // UPDATE Existing Config
@@ -291,36 +300,39 @@ export default function BotTraining() {
         </div>
       </div>
 
-      {/* AI Config Banner Component */}
-      <AIConfigBanner model={configForm.model} apiKey={botConfig?.api_key} />
+    {/* AI Config Banner Component */}
+        <AIConfigBanner
+          model={configForm.model}
+          apiKey={botConfig?.api_key}
+          onConfigure={() => setShowConfigModal(true)}
+        />
 
-      {/* Product Table Component */}
-      <ProductTable
-        search={search}
-        setSearch={setSearch}
-        products={products}
-        onEdit={handleEdit}
-        onDelete={handleDelete}
-      />
+        {/* Product Table Component */}
+        <ProductTable
+          products={products}
+          search={search}
+          setSearch={setSearch}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
+        />
 
-      {/* Product Add/Edit Modal Component */}
-      <ProductModal
-        open={showModal}
-        onOpenChange={setShowModal}
-        editingProduct={editingProduct}
-        form={form}
-        setForm={setForm}
-        onSave={handleSaveProduct}
-      />
+        {/* Product Add/Edit Modal Component */}
+        <ProductModal
+          open={showModal}
+          onOpenChange={setShowModal}
+          editingProduct={editingProduct}
+          form={form}
+          setForm={setForm}
+          onSave={handleSaveProduct}
+        />
 
-      {/* Bot Config Modal Component */}
-      <BotConfigModal
-        open={showConfigModal}
-        onOpenChange={setShowConfigModal}
-        config={configForm}
-        onChange={setConfigForm}
-        onSaveSuccess={handleSaveConfig}
-      />
+        {/* Bot Config Modal Component (FIXED PROPS) */}
+        <BotConfigModal
+          isOpen={showConfigModal}
+          onClose={() => setShowConfigModal(false)}
+          configForm={configForm}
+          onSave={handleSaveConfig}
+        />
     </div>
   );
 }
