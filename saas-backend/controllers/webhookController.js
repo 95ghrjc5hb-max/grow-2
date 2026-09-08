@@ -3,7 +3,7 @@ import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.j
 import { createShopifyOrder } from '../services/shopifyService.js';
 import { getNotificationSettings, getBillingUsage } from '../services/settingsService.js';
 import { handleCustomerMessage, transcribeAudioWithGroq } from '../services/aiAgentService.js';
-
+import { checkAndIncrementMetaUsage } from '../services/usageService.js';
 // --- Helper: Send Notification to Slack & Discord ---
 const sendAlertToChannels = async (orgId, eventType, textMessage) => {
     try {
@@ -48,82 +48,49 @@ export const verifyMetaWebhook = (req, res) => {
 
 // Helper: Get or Create Conversation Thread in Supabase
 const getOrCreateConversation = async (orgId, channel, customerId, customerName, initialMessage) => {
-    try {
-        let { data: conv } = await supabase
-            .from('conversations')
-            .select('*')
-            .eq('org_id', orgId)
-            .eq('customer_identifier', customerId)
-            .eq('channel', channel)
-            .maybeSingle();
+  try {
+    let { data: conv } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('org_id', orgId)
+      .eq('customer_identifier', customerId)
+      .eq('channel', channel)
+      .maybeSingle();
 
-        if (!conv) {
-            // 🛑 FIRST: Check current billing limits BEFORE creating the chat or increasing token
-            const { data: billing } = await supabase
-                .from('billing_accounts')
-                .select('tokens_used, token_limit')
-                .eq('org_id', orgId)
-                .maybeSingle();
+    if (!conv) {
+      const { data: newConv, error: createError } = await supabase
+        .from('conversations')
+        .insert({
+          org_id: orgId,
+          customer_name: customerName,
+          customer_identifier: customerId,
+          channel: channel,
+          last_message: initialMessage,
+          status: 'open',
+          message_count: 0,
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
 
-            const currentUsed = billing?.tokens_used || 0;
-            const limit = billing?.token_limit || 30;
-
-            let isBlocked = false;
-
-            if (currentUsed >= limit) {
-                isBlocked = true;
-            } else {
-                await supabase
-                    .from('billing_accounts')
-                    .update({ tokens_used: currentUsed + 1 })
-                    .eq('org_id', orgId);
-            }
-
-            const { data: newConv, error: createError } = await supabase
-                .from('conversations')
-                .insert({
-                    org_id: orgId,
-                    customer_name: customerName,
-                    customer_identifier: customerId,
-                    channel: channel,
-                    last_message: initialMessage,
-                    status: 'open',
-                    updated_at: new Date().toISOString()
-                })
-                .select()
-                .single();
-
-            if (createError) throw createError;
-
-            newConv.is_limit_blocked = isBlocked;
-            return newConv;
-        }
-
-        // If conversation already exists (Old customer)
-        await supabase
-            .from('conversations')
-            .update({
-                last_message: initialMessage,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', conv.id);
-
-        const { data: billingCheck } = await supabase
-            .from('billing_accounts')
-            .select('tokens_used, token_limit')
-            .eq('org_id', orgId)
-            .maybeSingle();
-
-        const usedNow = billingCheck?.tokens_used || 0;
-        const limitNow = billingCheck?.token_limit || 30;
-
-        conv.is_limit_blocked = (usedNow >= limitNow);
-        return conv;
-
-    } catch (err) {
-        console.error('[CONVERSATION SYNC ERROR]:', err.message);
-        return null;
+      if (createError) throw createError;
+      return newConv;
     }
+
+    // Update conversation timestamp & last message
+    await supabase
+      .from('conversations')
+      .update({
+        last_message: initialMessage,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', conv.id);
+
+    return conv;
+  } catch (err) {
+    console.error('CONVERSATION SYNC ERROR:', err.message);
+    return null;
+  }
 };
 
 // Helper: Push order to Shopify
@@ -260,32 +227,25 @@ export const handleMetaWebhook = async (req, res) => {
               continue; 
             }
 
-            // 5. Call AI Service & Check Limit
-            let aiResponse = null;
-            const { data: currentBilling } = await supabase
-              .from('billing_accounts')
-              .select('tokens_used, token_limit')
-              .eq('org_id', integration.org_id)
-              .maybeSingle();
+            // 5. Call AI Service & Check Meta Customer Limit
+    let aiResponse = null;
+    const usage = await checkAndIncrementMetaUsage(integration.org_id, customerPhone);
 
-            const currentUsed = currentBilling?.tokens_used || 0;
-            const currentLimit = currentBilling?.token_limit || 30;
-
-            if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
-              console.log(`[AI BLOCKED] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
-              aiResponse = {
-                reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
-                handover: true
-              };
-            } else {
-              aiResponse = await handleCustomerMessage({
-                customerMessage,
-                orgId: integration.org_id,
-                storeProducts: products || [],
-                conversationHistory,
-                imageUrl: null
-              });
-            }
+    if (!usage.allowed) {
+      console.log(`[AI BLOCKED] WhatsApp Org ${integration.org_id} reached Meta limit (${usage.reason})`);
+      aiResponse = {
+        reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
+        handover: true
+      };
+    } else {
+      aiResponse = await handleCustomerMessage({
+        customerMessage,
+        orgId: integration.org_id,
+        storeProducts: products || [],
+        conversationHistory,
+        imageUrl: null
+      });
+    }
 
             if (aiResponse && aiResponse.handover) {
               await sendAlertToChannels(
@@ -544,33 +504,25 @@ export const handleMetaWebhook = async (req, res) => {
             continue; 
           }
 
-          // 5. Call AI Service & Check Limit
-          let aiResponse = null;
-          const { data: currentBilling } = await supabase
-            .from('billing_accounts')
-            .select('tokens_used, token_limit')
-            .eq('org_id', integration.org_id)
-            .maybeSingle();
+          // 5. Call AI Service & Check Meta Customer Limit
+    let aiResponse = null;
+    const usage = await checkAndIncrementMetaUsage(integration.org_id, senderId);
 
-          const currentUsed = currentBilling?.tokens_used || 0;
-          const currentLimit = currentBilling?.token_limit || 30;
-
-          if (currentUsed >= currentLimit || (conv && conv.is_limit_blocked)) {
-            console.log(`[AI BLOCKED - MESSENGER/IG] Org ${integration.org_id} reached limit: ${currentUsed}/${currentLimit}`);
-            aiResponse = {
-              reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
-              handover: true
-            };
-          } else {
-            aiResponse = await handleCustomerMessage({
-              customerMessage,
-              orgId: integration.org_id,
-              storeProducts: products || [],
-              conversationHistory,
-              imageUrl 
-            });
-          }
-
+    if (!usage.allowed) {
+      console.log(`[AI BLOCKED] Messenger/IG Org ${integration.org_id} reached Meta limit (${usage.reason})`);
+      aiResponse = {
+        reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
+        handover: true
+      };
+    } else {
+      aiResponse = await handleCustomerMessage({
+        customerMessage,
+        orgId: integration.org_id,
+        storeProducts: products || [],
+        conversationHistory,
+        imageUrl
+      });
+    }
           if (aiResponse && aiResponse.handover) {
             await sendAlertToChannels(
               integration.org_id,

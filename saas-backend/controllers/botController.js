@@ -20,7 +20,7 @@ exports.getBotConfig = async (req, res) => {
         isConfigured: false,
         config: {
           llm_provider: 'Groq Cloud',
-          model_name: 'llama-3.1-8b-instant',
+          model_name: 'llama-3.3-70b-versatile',
           api_key: '',
           system_prompt: 'Use this product inventory dataset as the primary ground-truth knowledge base to reply to customer questions accurately and concisely.',
           order_capture_fields: [
@@ -69,7 +69,7 @@ exports.saveBotConfig = async (req, res) => {
       .upsert({
         org_id: orgId,
         llm_provider: provider || llm_provider || "Groq Cloud",
-        model_name: model || model_name || "llama-3.1-8b-instant",
+        model_name: model || model_name || "llama-3.3-70b-versatile",
         api_key: api_key ? api_key.trim() : null,
         system_prompt: system_prompt,
         order_capture_fields: Array.isArray(order_capture_fields) ? order_capture_fields : [],

@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { supabase } from "../config/supabase.js";
-
+import { createClient } from '@supabase/supabase-js';
 // Reused so Settings doesn't duplicate logic that already lives elsewhere.
 // If your actual exports have different names, adjust these two lines —
 // everything below only calls the functions listed in the comments.
@@ -43,7 +43,7 @@ class ValidationError extends Error {
     this.status = 400;
   }
 }
-
+// ১. আপনার হারিয়ে যাওয়া Error Handler ফাংশন
 function assertNoError(error, context) {
   if (error) {
     const err = new Error(`${context}: ${error.message}`);
@@ -52,21 +52,35 @@ function assertNoError(error, context) {
   }
 }
 
-async function getProfile(userId, workspaceId) {
-  const { data, error } = await supabase
+// ২. Instant Supabase Client তৈরি করার Helper ফাংশন
+const getUserSupabase = (userToken) => {
+  if (!userToken) throw new Error("Missing user token for database request");
+  
+  const url = process.env.SUPABASE_URL || supabase.supabaseUrl;
+  const key = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || supabase.supabaseKey;
+
+  return createClient(url, key, {
+    global: { headers: { Authorization: `Bearer ${userToken}` } },
+    auth: { persistSession: false }
+  });
+};
+
+async function getProfile(userId, userToken) {
+  
+ const userSupabase = getUserSupabase(userToken);
+  const { data, error } = await userSupabase
     .from("profiles")
     .select("*")
     .eq("id", userId)
-    .maybeSingle(); // FIXED: Changed .single() to .maybeSingle()
+    .maybeSingle();
 
   assertNoError(error, "Failed to load profile");
 
-  // Prevent crash if profile is missing in the database
   return {
     id: userId,
     fullName: data?.full_name || "New User",
     email: data?.email || "",
-    phone: data?.phone || "",
+    phone: data?.phone,
     role: data?.role || "owner",
     twoFactorEnabled: data?.two_factor_enabled || false,
   };
@@ -127,8 +141,10 @@ async function setTwoFactorEnabled(userId, workspaceId, enabled) {
   assertNoError(error, "Failed to update two-factor setting");
 }
 
-async function listSessions(userId) {
-  const { data, error } = await supabase
+async function listSessions(userId, userToken) {
+  
+  const userSupabase = getUserSupabase(userToken);
+  const { data, error } = await userSupabase
     .from("user_sessions")
     .select("id, browser, os, device_type, location, last_active_at, is_current")
     .eq("user_id", userId)

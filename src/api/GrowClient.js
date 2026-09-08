@@ -75,8 +75,8 @@ export const settings = {
   revokeSession: (sessionId) => api.delete(`/settings/profile/sessions/${sessionId}`),
 
   // Store / workspace
-  getWorkspaces: () => api.get("/settings/workspace"),
-  updateWorkspaces: (payload) => api.patch("/settings/workspace", payload),
+getWorkspace: () => api.get("/settings/workspace"),
+  updateWorkspace: (payload) => api.patch("/settings/workspace", payload),
   getStoreConnection: () => api.get("/settings/workspace/store"),
 
   // AI agent guardrails

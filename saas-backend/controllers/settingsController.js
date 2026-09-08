@@ -15,7 +15,8 @@ const getWorkspaceId = (req) => req.headers["x-workspace-id"] || req.user?.org_i
 // ---- General profile ----
 
 export const getProfile = asyncHandler(async (req, res) => {
-  const data = await settingsService.getProfile(getUserId(req), getWorkspaceId(req));
+  const token = req.headers.authorization?.split(' ')[1];
+  const data = await settingsService.getProfile(getUserId(req), token);
   res.json({ success: true, data });
 });
 
@@ -40,7 +41,8 @@ export const setTwoFactor = asyncHandler(async (req, res) => {
 });
 
 export const listSessions = asyncHandler(async (req, res) => {
-  const data = await settingsService.listSessions(getUserId(req));
+  const token = req.headers.authorization?.split(' ')[1];
+  const data = await settingsService.listSessions(getUserId(req), token);
   res.json({ success: true, data });
 });
 

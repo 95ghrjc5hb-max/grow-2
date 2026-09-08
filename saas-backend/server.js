@@ -375,18 +375,39 @@ app.get('/api/v1/auth/me', authenticateToken, async (req, res) => {
 // Unified Inbox Endpoints
 
 app.post('/api/message/send', authenticateToken, sendManualMessage);
+
+
 app.use('/api/conversations', conversationRoutes);
+
+
 app.use('/api/auth', authRoutes);
+
+
 app.use('/api/v1/orders', orderRoutes);
+
+
 app.use('/api/integrations', integrationRoutes);
+
+
 app.use('/api/v1/webhooks', webhookRoutes);
+
+
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
+
+
 app.use('/api/widget', express.static(path.join(__dirname, 'public/widget')));
+
+app.use('/api/shopify', shopifyRoutes);
+app.use('/api/v1/shopify', shopifyRoutes);
 app.use('/api/v1/billing/lemon-squeezy', lemonSqueezyRoutes);
+app.use('/api/v1/billing', lemonSqueezyRoutes);
+app.use('/api/billing', lemonSqueezyRoutes);
+
 app.use('/api/v1/settings', settingsRoutes);
+
 app.use('/api/v1/stripe', stripeRoutes);
-app.use('/api/v1/billing/lemon-squeezy', lemonSqueezyRoutes);
+
 app.use('/api/v1/shopify', shopifyRoutes);
 // Any request that doesn't match the API routes will load the frontend
 app.get(/(.*)/, (req, res) => {

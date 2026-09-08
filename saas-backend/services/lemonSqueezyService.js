@@ -4,8 +4,7 @@ export const createLemonSqueezyCheckout = async ({ variantId, workspaceId, userE
   const storeId = process.env.LEMON_SQUEEZY_STORE_ID;
 
   if (!apiKey || !storeId) {
-    // API Key না থাকলে ডাটাবেস সরাসরি আপডেট করার ফলব্যাক লিঙ্ক (টেস্টিংয়ের জন্য)
-    return `${process.env.BACKEND_URL}/api/v1/settings/billing/mock-success?workspaceId=${workspaceId}&plan=${encodeURIComponent(planName)}`;
+    return `${process.env.BACKEND_URL}/api/v1/settings/billing/mock-success?workspaceId=${workspaceId}&plan=${planName}`;
   }
 
   const response = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
@@ -25,14 +24,24 @@ export const createLemonSqueezyCheckout = async ({ variantId, workspaceId, userE
               workspace_id: workspaceId,
               plan_name: planName
             }
+          },
+          product_options: {
+            redirect_url: 'http://localhost:5173/settings',
+            receipt_button_text: 'Go to Dashboard'
           }
         },
         relationships: {
           store: {
-            data: { type: 'stores', id: storeId.toString() }
+            data: {
+              type: 'stores',
+              id: storeId.toString()
+            }
           },
           variant: {
-            data: { type: 'variants', id: variantId.toString() }
+            data: {
+              type: 'variants',
+              id: variantId.toString()
+            }
           }
         }
       }
@@ -40,5 +49,5 @@ export const createLemonSqueezyCheckout = async ({ variantId, workspaceId, userE
   });
 
   const json = await response.json();
-  return json.data?.attributes?.url;
+  return json?.data?.attributes?.url;
 };

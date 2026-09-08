@@ -194,24 +194,25 @@ console.log('[shopifyController] Access Token acquired successfully:', accessTok
   }
 };
 
-// =========================================================================
 // 3. STOREFRONT CHAT: 100% Dynamic Tenant Resolution (No Hardcoded IDs)
-// =========================================================================
 export const handleStorefrontChat = async (req, res) => {
   try {
     const { message, shop, org_id, image, audio, conversationHistory = [] } = req.body;
+    console.log(`[shopifyController] Incoming chat from shop: "${shop}", org_id: "${org_id}"`);
 
     let targetOrgId = org_id;
 
     // A. Dynamic Org Resolution from Shopify Store Domain
     if (!targetOrgId && shop) {
       const cleanShop = shop.replace(/^https?:\/\//, '').replace(/\/$/, '').trim().toLowerCase();
-      
+      const baseDomain = cleanShop.replace('.myshopify.com', '');
+
+      // 1. Check exact or partial match in integrations table
       const { data: integ } = await supabase
         .from('integrations')
         .select('org_id')
         .eq('platform', 'shopify')
-        .ilike('page_id', `%${cleanShop}%`)
+        .or(`page_id.eq.${cleanShop},page_id.ilike.%${baseDomain}%`)
         .maybeSingle();
 
       if (integ?.org_id) {
@@ -219,23 +220,38 @@ export const handleStorefrontChat = async (req, res) => {
       }
     }
 
+    // 2. Dev/Preview Fallback: Auto-pick active shopify store if domain doesn't match
+    if (!targetOrgId) {
+      const { data: fallbackInteg } = await supabase
+        .from('integrations')
+        .select('org_id')
+        .eq('platform', 'shopify')
+        .limit(1)
+        .maybeSingle();
+
+      if (fallbackInteg?.org_id) {
+        targetOrgId = fallbackInteg.org_id;
+        console.log(`[shopifyController] Using Fallback Org ID: ${targetOrgId}`);
+      }
+    }
+
     if (!targetOrgId) {
       console.warn(`[shopifyController] Unregistered storefront request from shop: ${shop}`);
-      return res.status(404).json({
+      return res.status(200).json({
         success: false,
-        reply: 'This store has not configured the AI Assistant yet. Please connect your store from the Grow Dashboard.',
+        reply: "This store has not configured the AI Assistant yet. Please connect your store from the Grow Dashboard."
       });
     }
 
-    console.log(`[shopifyController] Dynamic Chat incoming -> Store: "${shop}" | Org: "${targetOrgId}"`);
+    console.log(`[shopifyController] Dynamic Chat Incoming -> Store: "${shop}" | Org: "${targetOrgId}"`);
 
     // B. Check & Increment Shopify Message Usage Limit
     const usage = await checkAndIncrementShopifyUsage(targetOrgId);
     if (!usage.allowed) {
       return res.status(200).json({
         success: true,
-        reply: 'This store has reached its AI message limit for the current billing cycle. Please upgrade your plan in settings to continue.',
-        handover: true,
+        reply: "This store has reached its AI message limit for the current billing cycle. Please upgrade your plan to continue using the AI Assistant.",
+        handover: true
       });
     }
 
@@ -245,23 +261,25 @@ export const handleStorefrontChat = async (req, res) => {
       orgId: targetOrgId,
       conversationHistory,
       imageUrl: image || null,
+      audioUrl: audio || null
     });
 
     return res.status(200).json({
       success: true,
-      reply: aiResponse?.reply || 'Hello! How can I assist you today?',
+      reply: aiResponse?.reply || "Hello! How can I assist you today?",
       orderData: aiResponse?.orderData || null,
       image_url: aiResponse?.image_url || null,
-      handover: Boolean(aiResponse?.handover),
+      handover: Boolean(aiResponse?.handover)
     });
   } catch (error) {
     console.error('[shopifyController] handleStorefrontChat Fatal Error:', error);
-    return res.status(500).json({
+    return res.status(200).json({
       success: false,
-      reply: 'We are currently experiencing technical difficulties. Please try again in a moment.',
+      reply: "We are currently experiencing technical difficulties. Please try again in a moment."
     });
   }
 };
+  
 // =========================================================================
 // 4. SHOPIFY WEBHOOK RECEIVER (REAL-TIME AUTO SYNC)
 // =========================================================================
@@ -319,47 +337,57 @@ export const handleShopifyWebhook = async (req, res) => {
     } catch (err) {
         console.error('❌ [SHOPIFY WEBHOOK ERROR]:', err.message);
     }
-};// 5. SHOPIFY BILLING APPROVAL CALLBACK
+};
+
+// 5. SHOPIFY BILLING APPROVAL CALLBACK
 export const handleShopifyBillingCallback = async (req, res) => {
   try {
     const { charge_id, workspace_id, plan } = req.query;
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
 
-    if (!charge_id || !workspace_id) {
+    console.log("👉 [Billing Callback Hit]:", { charge_id, workspace_id, plan });
+
+    if (!workspace_id) {
       return res.redirect(`${frontendUrl}/settings?billing=failed`);
     }
 
-    const planName = plan || "Grow Pro";
-    const name = planName.toLowerCase();
-
-    // Determine message limits based on tier
+    const rawPlan = (plan || "Grow Pro").toLowerCase();
+    let planName = "Grow Pro";
     let messageLimit = 2000;
-    if (name.includes("premium") || name.includes("30")) {
-      messageLimit = 5000;
-    } else if (name.includes("unlimited") || name.includes("60")) {
+
+    if (rawPlan.includes("unlimited") || rawPlan.includes("60")) {
+      planName = "Grow Unlimited";
       messageLimit = 10000;
+    } else if (rawPlan.includes("premium") || rawPlan.includes("30")) {
+      planName = "Grow Premium";
+      messageLimit = 5000;
+    } else if (rawPlan.includes("pro") || rawPlan.includes("15")) {
+      planName = "Grow Pro";
+      messageLimit = 2000;
     }
 
-    // Update Supabase billing account details
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("billing_accounts")
       .update({
         shopify_plan: planName,
         shopify_status: "active",
-        shopify_charge_id: charge_id,
+        shopify_charge_id: String(charge_id || ""),
         shopify_messages_limit: messageLimit,
+        shopify_messages_used: 0,
         updated_at: new Date().toISOString()
       })
-      .or(`org_id.eq.${workspace_id},workspace_id.eq.${workspace_id}`);
+      .eq("org_id", workspace_id)
+      .select();
 
     if (error) {
-      console.error("[Shopify Billing DB Error]:", error.message);
+      console.error("❌ DB Update Error:", error);
       return res.redirect(`${frontendUrl}/settings?billing=error`);
     }
 
+    console.log("✅ Plan Updated to:", planName, data);
     return res.redirect(`${frontendUrl}/settings?billing=success`);
   } catch (error) {
-    console.error("[Shopify Billing Callback Fatal Error]:", error.message);
+    console.error("❌ Callback Fatal Error:", error);
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
     return res.redirect(`${frontendUrl}/settings?billing=failed`);
   }
