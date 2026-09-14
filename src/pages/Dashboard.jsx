@@ -34,7 +34,23 @@ const useRealtimeDashboard = () => {
       if (isMounted) setLoading(true);
       setError(null);
 
-      // Concurrent Data Fetching for High Performance
+      // ১. বর্তমান লগইন করা ইউজার নেওয়া
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        if (isMounted) setLoading(false);
+        return;
+      }
+
+      // ২. ইউজারের org_id খুঁজে বের করা
+      const { data: memberData } = await supabase
+        .from('organization_members')
+        .select('org_id')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      const orgId = memberData?.org_id || user.id;
+
+      // ৩. প্রতিটি কোয়েরিতে .eq('org_id', orgId) দিয়ে ফিল্টার করা
       const [
         ordersResponse,
         channelsResponse,
@@ -42,12 +58,13 @@ const useRealtimeDashboard = () => {
         revenueResponse,
         recentOrdersResponse
       ] = await Promise.all([
-        supabase.from('orders').select('id', { count: 'exact', head: true }),
-        supabase.from('integrations').select('id', { count: 'exact', head: true }).eq('is_connected', true),
-        supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'active'),
-        supabase.from('orders').select('amount, created_at'),
+        supabase.from('orders').select('id', { count: 'exact', head: true }).eq('org_id', orgId),
+        supabase.from('integrations').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('is_connected', true),
+        supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'active'),
+        supabase.from('orders').select('amount, created_at').eq('org_id', orgId),
         supabase.from('orders')
           .select('id, order_id, customer, channel, amount, status, created_at')
+          .eq('org_id', orgId)
           .order('created_at', { ascending: false })
           .limit(5)
       ]);

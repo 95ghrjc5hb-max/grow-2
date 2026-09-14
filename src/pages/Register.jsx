@@ -98,7 +98,7 @@ export default function Register() {
 
       toast({
         title: "Verification Code Dispatched",
-        description: `Security token sent to ${cleanEmail}`,
+        description: `Fresh verification code sent to ${cleanEmail}`,
       });
 
       setShowOtp(true);
@@ -130,7 +130,7 @@ export default function Register() {
       const { data, error } = await supabase.auth.verifyOtp({
         email: cleanEmail,
         token: otpCode,
-        type: 'email', 
+        type: 'signup',
       });
 
       if (error) throw error;

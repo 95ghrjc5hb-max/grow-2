@@ -62,44 +62,101 @@ export const createCheckoutSession = async (req, res) => {
   }
 };
 
-// LEMON SQUEEZY WEBHOOK HANDLER
+// ==========================================
+// LEMON SQUEEZY WEBHOOK HANDLER (LONG-TERM PRODUCTION READY)
+// ==========================================
 export const handleLemonSqueezyWebhook = async (req, res) => {
   try {
     const event = req.body;
-    console.log("👉 [Lemon Squeezy Webhook Event]:", event?.meta?.event_name);
-
     const eventName = event?.meta?.event_name;
+    
+    console.log(`[Lemon Squeezy Webhook] Received event: ${eventName}`);
+    
+    // Extract metadata & IDs
     const customData = event?.meta?.custom_data || {};
     const workspaceId = customData.workspace_id || customData.org_id;
+    const subscriptionId = event?.data?.id;
+    const orderId = event?.data?.attributes?.order_id || event?.data?.attributes?.first_subscription_item?.order_id || subscriptionId;
+    const renewsAt = event?.data?.attributes?.renews_at || null;
+    const status = event?.data?.attributes?.status || 'active';
+    
+    // Dynamic plan & exact customer limit setup (Matches UI Modal: 500 / 1200 / 3000)
+    const planName = customData.plan_name || event?.data?.attributes?.product_name || 'Grow Pro';
+    const normalizedPlan = planName.toLowerCase();
+    
+    let customerLimit = 500;
+    if (normalizedPlan.includes('unlimited')) {
+      customerLimit = 3000;
+    } else if (normalizedPlan.includes('premium')) {
+      customerLimit = 1200;
+    }
 
-    if (eventName === 'subscription_created' || eventName === 'subscription_updated' || eventName === 'order_created') {
-      const attributes = event?.data?.attributes || {};
-      const subscriptionId = event?.data?.id;
+    // Tracked lifecycle events
+    const validEvents = [
+      'subscription_created', 
+      'subscription_updated', 
+      'subscription_payment_success',
+      'subscription_payment_failed',
+      'subscription_canceled',
+      'subscription_expired',
+      'order_created'
+    ];
 
+    if (validEvents.includes(eventName)) {
       if (workspaceId && workspaceId !== 'default_workspace') {
+        
+        let targetPlan = planName;
+        let targetStatus = status;
+        let targetLimit = customerLimit;
+
+        // Auto-downgrade logic on expiration/cancellation
+        if (eventName === 'subscription_canceled' || eventName === 'subscription_expired') {
+          targetPlan = 'Grow Free';
+          targetStatus = 'canceled';
+          targetLimit = 10;
+        } else if (eventName === 'subscription_payment_failed') {
+          targetStatus = 'past_due';
+        }
+
+        // Base database payload
+        const updatePayload = {
+          meta_plan: targetPlan,
+          meta_status: targetStatus,
+          meta_customers_limit: targetLimit,
+          meta_subscription_id: String(subscriptionId || ""),
+          meta_payment_id: String(orderId || ""),
+          meta_renews_at: renewsAt,
+          updated_at: new Date().toISOString()
+        };
+
+        // Reset customer usage counter to 0 on new billing cycle / successful payment
+        if (eventName === 'subscription_payment_success' || eventName === 'subscription_created') {
+          updatePayload.meta_customers_used = 0;
+        }
+
+        // Secure DB Update (RLS bypassed via backend service key)
         const { data, error } = await supabase
-          .from("billing_accounts")
-          .update({
-            meta_plan: "Grow Pro",
-            meta_status: "active",
-            meta_customers_limit: 500,
-            meta_subscription_id: String(subscriptionId || ""),
-            updated_at: new Date().toISOString()
-          })
-          .eq("org_id", workspaceId)
+          .from('billing_accounts')
+          .update(updatePayload)
+          .eq('org_id', workspaceId)
           .select();
 
         if (error) {
-          console.error("❌ [Lemon Squeezy DB Error]:", error);
+          console.error('[Supabase DB Error] Failed to update billing account:', error);
         } else {
-          console.log("✅ [Lemon Squeezy DB Updated Successfully]:", data);
+          console.log(`[Success] Billing updated for workspace: \({workspaceId} | Event:\){eventName}`);
         }
+      } else {
+        console.warn('[Warning] No valid workspace ID found in custom_data. Update skipped.');
       }
+    } else {
+      console.log(`[Ignored] Event '${eventName}' is not actively tracked.`);
     }
 
-    return res.status(200).json({ received: true });
+    return res.status(200).json({ success: true, message: 'Webhook processed' });
+
   } catch (error) {
-    console.error("❌ [Lemon Squeezy Webhook Error]:", error);
-    return res.status(500).json({ error: "Webhook processing failed" });
+    console.error('[Webhook Error] Processing failed:', error);
+    return res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 };
