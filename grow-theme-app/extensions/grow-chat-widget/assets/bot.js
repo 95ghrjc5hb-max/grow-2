@@ -1,3 +1,63 @@
+// ১. আপনার আসল Supabase URL ও Anon Key
+const SUPABASE_URL = "https://osauxwxxkimjaadppqrq.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_KEKFu4tlt1GA9a-d71MczQ_t4_H8_1n";
+
+let realtimeChannel = null;
+
+// ২. ডিবাগ ট্র্যাকারসহ লাইভ লিসেনার ফাংশন
+function subscribeToAgentLiveChat(convId) {
+  console.log("🔥 subscribeToAgentLiveChat called with ID:", convId);
+  
+  const sb = window.supabase;
+  if (!sb) {
+    console.error("❌ window.supabase is missing. Script not loaded!");
+    return;
+  }
+  
+  if (realtimeChannel) {
+    console.log("⚠️ Already subscribed to channel.");
+    return;
+  }
+
+  // এখানে আপনার URL ও Key ব্যবহার করে ডাটাবেসে কানেক্ট হচ্ছে
+  const supabaseClient = sb.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  console.log("✅ Supabase Client Initialized for Realtime");
+
+  realtimeChannel = supabaseClient
+    .channel(`storefront_${convId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `conversation_id=eq.${convId}`
+      },
+      (payload) => {
+        console.log("🚀 REALTIME PAYLOAD RECEIVED:", payload);
+        const newMsg = payload.new;
+        
+        if (newMsg && newMsg.sender === 'agent') {
+          const chatBody = document.getElementById("grow-ai-body");
+          if (chatBody) {
+            const agentDiv = document.createElement("div");
+            agentDiv.className = "grow-ai-message grow-ai-bot-message";
+            agentDiv.textContent = newMsg.content;
+            chatBody.appendChild(agentDiv);
+            chatBody.scrollTop = chatBody.scrollHeight;
+            console.log("✅ Agent message rendered on screen!");
+          } else {
+            console.error("❌ DOM Error: 'grow-ai-body' not found.");
+          }
+        }
+      }
+    )
+    .subscribe((status, err) => {
+      console.log('📡 Realtime Connection Status:', status);
+      if (err) console.error("❌ Realtime Subscription Error:", err);
+    });
+}
+
 (function () {
   console.log("Grow AI Chat Widget Loaded (Enterprise Multi-Tenant Mode)");
 
@@ -209,25 +269,30 @@
 
       if (!response.ok) throw new Error(`Server status: ${response.status}`);
       const data = await response.json();
-
+if (data.conversation_id) {
+  subscribeToAgentLiveChat(data.conversation_id);
+}
       if (messageBody.contains(loadingDiv)) messageBody.removeChild(loadingDiv);
 
-      const botMsgDiv = document.createElement("div");
-      botMsgDiv.className = "grow-ai-message grow-ai-bot-message";
-      botMsgDiv.textContent = data.reply || "I am happy to assist you!";
+      // শুধুমাত্র এআই রিপ্লাই থাকলে বটের মেসেজ রেন্ডার করবে
+if (data.reply) {
+  const botMsgDiv = document.createElement("div");
+  botMsgDiv.className = "grow-ai-message grow-ai-bot-message";
+  botMsgDiv.textContent = data.reply;
 
-      if (data.image_url) {
-        const img = document.createElement("img");
-        img.src = data.image_url;
-        img.style.maxHeight = "120px";
-        img.style.borderRadius = "8px";
-        img.style.marginTop = "8px";
-        img.style.display = "block";
-        botMsgDiv.appendChild(img);
-      }
+  if (data.image_url) {
+    const img = document.createElement("img");
+    img.src = data.image_url;
+    img.style.maxHeight = "120px";
+    img.style.borderRadius = "8px";
+    img.style.marginTop = "8px";
+    img.style.display = "block";
+    botMsgDiv.appendChild(img);
+  }
 
-      messageBody.appendChild(botMsgDiv);
-      messageBody.scrollTop = messageBody.scrollHeight;
+  messageBody.appendChild(botMsgDiv);
+  messageBody.scrollTop = messageBody.scrollHeight;
+}
     } catch (error) {
       if (messageBody.contains(loadingDiv)) messageBody.removeChild(loadingDiv);
       console.error("[Grow AI Widget Error]:", error);

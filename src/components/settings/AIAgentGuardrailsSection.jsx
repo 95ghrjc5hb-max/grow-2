@@ -78,35 +78,27 @@ export default function AIAgentGuardrailsSection() {
 
   return (
     <form onSubmit={handleSave} className="space-y-6">
-      <SectionCard title="Model" description="Which Groq-hosted model answers customer conversations." icon={Bot}>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Model" htmlFor="model" hint="Faster models cost less but may need a lower confidence threshold.">
-            <Select id="model" value={config.model} onChange={(e) => setConfig({ ...config, model: e.target.value })}>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field
-            label={`Confidence threshold (${Math.round(config.confidenceThreshold * 100)}%)`}
-            htmlFor="confidence"
-            hint="Below this, the agent hands off to a human instead of guessing."
-          >
-            <input
-              id="confidence"
-              type="range"
-              min={0.3}
-              max={0.95}
-              step={0.05}
-              value={config.confidenceThreshold}
-              onChange={(e) => setConfig({ ...config, confidenceThreshold: Number(e.target.value) })}
-              className="w-full accent-teal-500"
-            />
-          </Field>
-        </div>
-      </SectionCard>
+      <SectionCard title="Confidence & AI Handover" description="Set confidence threshold for automated AI responses." icon={Bot}>
+  <div>
+    <Field
+      label={`Confidence threshold (${Math.round(config.confidenceThreshold * 100)}%)`}
+      htmlFor="confidence"
+      hint="Below this, the agent hands off to a human instead of guessing."
+    >
+      <input
+        id="confidence"
+        type="range"
+        min={0.3}
+        max={0.95}
+        step={0.05}
+        value={config.confidenceThreshold}
+        onChange={(e) => setConfig({ ...config, confidenceThreshold: Number(e.target.value) })}
+        className="w-full accent-teal-600"
+      />
+    </Field>
+  </div>
+</SectionCard>
+
 
       <SectionCard title="Persona & system prompt" description="Defines how the agent introduces itself and behaves." icon={Bot}>
         <div className="grid gap-4">

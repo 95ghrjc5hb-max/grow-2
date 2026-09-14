@@ -91,46 +91,75 @@ export default function UnifiedInbox() {
         (payload) => {
           const newMsg = payload.new;
 
-          // 1. Update currently selected active chat
-          setSelectedConv((prevSelected) => {
+         // 1. Update currently selected active chat
+        setSelectedConv((prevSelected) => {
             if (!prevSelected) return prevSelected;
             const targetId = prevSelected.id || prevSelected._id;
-
+            
             if (newMsg.conversation_id === targetId) {
-              const exists = prevSelected.messages?.some(
-                (m) => m.id === newMsg.id || (m.created_at === newMsg.created_at && m.sender === newMsg.sender)
-              );
-              if (exists) return prevSelected;
+                const currentMessages = prevSelected.messages || [];
+                
+                // Step A: If the real message already exists, do nothing
+                if (currentMessages.some(m => m.id === newMsg.id)) return prevSelected;
+                
+                // Step B: Find the optimistic (fake) message and replace it with the real one
+                let isReplaced = false;
+                const mergedMessages = currentMessages.map(m => {
+                    // Match by sender and content, and ensure the old message has no ID yet
+                    if (!isReplaced && !m.id && m.sender === newMsg.sender && (m.content === newMsg.content || m.text === newMsg.content)) {
+                        isReplaced = true;
+                        return newMsg; 
+                    }
+                    return m;
+                });
 
-              return {
-                ...prevSelected,
-                messages: [...(prevSelected.messages || []), newMsg],
-                last_message: newMsg.content || newMsg.text || prevSelected.last_message,
-              };
-            }
-            return prevSelected;
-          });
-
-          // 2. Update sidebar conversations list live
-          setConversations((prevConvs) =>
-            prevConvs.map((conv) => {
-              const convId = conv.id || conv._id;
-              if (convId === newMsg.conversation_id) {
-                const exists = conv.messages?.some((m) => m.id === newMsg.id);
-                const updatedMessages = exists
-                  ? conv.messages
-                  : [...(conv.messages || []), newMsg];
+                // Step C: If it wasn't a replacement (e.g., new customer message), push to the array
+                if (!isReplaced) {
+                    mergedMessages.push(newMsg);
+                }
 
                 return {
-                  ...conv,
-                  messages: updatedMessages,
-                  last_message: newMsg.content || newMsg.text || conv.last_message,
-                  updated_at: newMsg.created_at,
+                    ...prevSelected,
+                    messages: mergedMessages,
+                    last_message: newMsg.content || newMsg.text,
+                    updated_at: newMsg.created_at,
                 };
-              }
-              return conv;
+            }
+            return prevSelected;
+        });
+
+        // 2. Update sidebar conversations list live
+        setConversations((prevConvs) =>
+            prevConvs.map((conv) => {
+                const convId = conv.id || conv._id;
+                if (convId === newMsg.conversation_id) {
+                    const currentMessages = conv.messages || [];
+                    
+                    if (currentMessages.some(m => m.id === newMsg.id)) return conv;
+                    
+                    let isReplaced = false;
+                    const mergedMessages = currentMessages.map(m => {
+                        if (!isReplaced && !m.id && m.sender === newMsg.sender && (m.content === newMsg.content || m.text === newMsg.content)) {
+                            isReplaced = true;
+                            return newMsg;
+                        }
+                        return m;
+                    });
+
+                    if (!isReplaced) {
+                        mergedMessages.push(newMsg);
+                    }
+                    
+                    return {
+                        ...conv,
+                        messages: mergedMessages,
+                        last_message: newMsg.content || newMsg.text,
+                        updated_at: newMsg.created_at,
+                    };
+                }
+                return conv;
             })
-          );
+        );
         }
       )
       .subscribe();

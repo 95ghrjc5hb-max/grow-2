@@ -192,12 +192,13 @@ export const handleMetaWebhook = async (req, res) => {
             // 2. Save incoming message
             if (conv) {
               await supabase.from('messages').insert({
-                conversation_id: conv.id,
-                sender: 'customer',
-                content: customerMessage,
-                platform_message_id: message.id || null,
-                created_at: new Date()
-              });
+  conversation_id: conv.id,
+  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
+  sender: 'customer',
+  content: customerMessage,
+  platform_message_id: message.id || null,
+  created_at: new Date().toISOString()
+});
             }
 
             // 3. Fetch products
@@ -288,11 +289,12 @@ export const handleMetaWebhook = async (req, res) => {
             // 7. Save outgoing message
             if (conv) {
               await supabase.from('messages').insert({
-                conversation_id: conv.id,
-                sender: 'bot',
-                content: replyText,
-                created_at: new Date()
-              });
+  conversation_id: conv.id,
+  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
+  sender: 'bot',
+  content: replyText,
+  created_at: new Date().toISOString()
+});
               await supabase
                 .from('conversations')
                 .update({ last_message: replyText, updated_at: new Date() })
@@ -469,12 +471,13 @@ export const handleMetaWebhook = async (req, res) => {
           // 2. Save incoming message
           if (conv) {
             await supabase.from('messages').insert({
-              conversation_id: conv.id,
-              sender: 'customer',
-              content: customerMessage || '[Customer sent an image]',
-              platform_message_id: messagingEvent.message.mid || null,
-              created_at: new Date()
-            });
+  conversation_id: conv.id,
+  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
+  sender: 'customer',
+  content: customerMessage || '[Customer sent an image]',
+  platform_message_id: messagingEvent.message.mid || null,
+  created_at: new Date().toISOString()
+});
           }
 
           // 3. Fetch products
@@ -563,11 +566,12 @@ export const handleMetaWebhook = async (req, res) => {
           // 7. Save outgoing message
           if (conv) {
             await supabase.from('messages').insert({
-              conversation_id: conv.id,
-              sender: 'bot',
-              content: replyText,
-              created_at: new Date()
-            });
+  conversation_id: conv.id,
+  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
+  sender: 'bot',
+  content: replyText,
+  created_at: new Date().toISOString()
+});
             await supabase
               .from('conversations')
               .update({ last_message: replyText, updated_at: new Date() })

@@ -12,7 +12,7 @@ export default function AIConfigBanner({ model, apiKey, onConfigure }) {
         </div>
         <div className="flex-1">
           <p className="text-sm font-medium text-white">
-            Groq AI Bot — <span className="text-teal-400 font-mono">{model || 'llama-3.1-8b-instant'}</span>
+          AI Sales Agent
           </p>
           <p className="text-xs text-slate-500 mt-0.5">
             Uses product inventory as ground-truth knowledge base for customer queries

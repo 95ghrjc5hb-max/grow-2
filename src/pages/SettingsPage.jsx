@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from "react-router-dom";
 import SettingsSidebar, { SETTINGS_TABS } from "../components/settings/SettingsSidebar.jsx";
 import GeneralProfileSection from "../components/settings/GeneralProfileSection.jsx";
 import StoreWorkspacesSection from "../components/settings/StoreWorkspacesSection.jsx";
@@ -25,7 +26,8 @@ const SECTION_COMPONENTS = {
 };
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState(SETTINGS_TABS[0].id);
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState(location.state?.activeTab || SETTINGS_TABS[0].id);
 
   const ActiveSection = SECTION_COMPONENTS[activeTab] ?? GeneralProfileSection;
   const activeTabMeta = SETTINGS_TABS.find((t) => t.id === activeTab);

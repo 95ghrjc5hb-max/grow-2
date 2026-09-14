@@ -47,3 +47,25 @@ export const authenticateToken = async (req, res, next) => {
     });
   }
 };
+import crypto from 'crypto';
+
+export const verifyShopifyWebhook = (req, res, next) => {
+  const hmacHeader = req.headers['x-shopify-hmac-sha256'];
+  const secret = process.env.SHOPIFY_API_SECRET || process.env.SHOPIFY_CLIENT_SECRET;
+
+  if (!hmacHeader || !secret) {
+    return res.status(401).json({ success: false, error: 'Unauthorized webhook request' });
+  }
+
+  // Calculate HMAC using the raw body buffer captured in server.js
+  const generatedHash = crypto
+    .createHmac('sha256', secret)
+    .update(req.rawBody || JSON.stringify(req.body), 'utf8')
+    .digest('base64');
+
+  if (crypto.timingSafeEqual(Buffer.from(generatedHash), Buffer.from(hmacHeader))) {
+    return next();
+  }
+
+  return res.status(401).json({ success: false, error: 'HMAC verification failed' });
+};

@@ -194,33 +194,44 @@ console.log('[shopifyController] Access Token acquired successfully:', accessTok
   }
 };
 
-// 3. STOREFRONT CHAT: 100% Dynamic Tenant Resolution (No Hardcoded IDs)
+// 3. STOREFRONT CHAT: 100% Dynamic Tenant Resolution + Unified Inbox Sync
 export const handleStorefrontChat = async (req, res) => {
   try {
-    const { message, shop, org_id, image, audio, conversationHistory = [] } = req.body;
-    console.log(`[shopifyController] Incoming chat from shop: "${shop}", org_id: "${org_id}"`);
+    const { 
+      message, 
+      shop, 
+      org_id, 
+      image, 
+      audio, 
+      session_id, 
+      customer_name, 
+      conversationHistory = [] 
+    } = req.body;
 
-    let targetOrgId = org_id;
+    console.log('[shopifyController] Incoming chat from shop:', shop, 'raw org_id:', org_id);
+
+    // FIX: Sanitize org_id so that string "undefined" or "null" is treated as null
+    let targetOrgId = (org_id && org_id !== 'undefined' && org_id !== 'null') ? org_id : null;
 
     // A. Dynamic Org Resolution from Shopify Store Domain
     if (!targetOrgId && shop) {
       const cleanShop = shop.replace(/^https?:\/\//, '').replace(/\/$/, '').trim().toLowerCase();
       const baseDomain = cleanShop.replace('.myshopify.com', '');
 
-      // 1. Check exact or partial match in integrations table
-      const { data: integ } = await supabase
+      const { data: integ, error: integErr } = await supabase
         .from('integrations')
         .select('org_id')
         .eq('platform', 'shopify')
-        .or(`page_id.eq.${cleanShop},page_id.ilike.%${baseDomain}%`)
+        .or(`page_id.eq.${cleanShop},page_id.like.%${baseDomain}%`)
         .maybeSingle();
 
       if (integ?.org_id) {
         targetOrgId = integ.org_id;
+        console.log('[shopifyController] Successfully resolved Org ID from domain:', targetOrgId);
       }
     }
 
-    // 2. Dev/Preview Fallback: Auto-pick active shopify store if domain doesn't match
+    // B. Dev/Preview Fallback: Auto-pick active shopify store if domain doesn't match
     if (!targetOrgId) {
       const { data: fallbackInteg } = await supabase
         .from('integrations')
@@ -231,7 +242,7 @@ export const handleStorefrontChat = async (req, res) => {
 
       if (fallbackInteg?.org_id) {
         targetOrgId = fallbackInteg.org_id;
-        console.log(`[shopifyController] Using Fallback Org ID: ${targetOrgId}`);
+        console.log('[shopifyController] Using Fallback Org ID:', targetOrgId);
       }
     }
 
@@ -243,43 +254,139 @@ export const handleStorefrontChat = async (req, res) => {
       });
     }
 
-    console.log(`[shopifyController] Dynamic Chat Incoming -> Store: "${shop}" | Org: "${targetOrgId}"`);
-
-    // B. Check & Increment Shopify Message Usage Limit
+    // // B. Check & Increment Shopify Message Usage Limit
     const usage = await checkAndIncrementShopifyUsage(targetOrgId);
     if (!usage.allowed) {
       return res.status(200).json({
         success: true,
-        reply: "This store has reached its AI message limit for the current billing cycle. Please upgrade your plan to continue using the AI Assistant.",
+        reply: "This store has reached its AI message limit for the current billing cycle. Please upgrade your plan.",
         handover: true
       });
     }
 
-    // C. Delegate to AI Agent Service (Handles Multi-Tenant RAG Vector Search & LLM)
+    // // C. Unified Inbox Integration (Sync Visitor & Conversation)
+    const visitorId = session_id || req.ip || `shopify_guest_${Date.now()}`;
+    const displayName = customer_name || `Shopify Visitor (${visitorId.slice(-4)})`;
+
+    let conv = null;
+    const { data: existingConv } = await supabase
+      .from('conversations')
+      .select('id, ai_active')
+      .eq('org_id', targetOrgId)
+      .eq('customer_identifier', visitorId)
+      .eq('channel', 'shopify')
+      .maybeSingle();
+
+    if (existingConv) {
+      conv = existingConv;
+    } else {
+      const { data: newConv, error: convErr } = await supabase
+        .from('conversations')
+        .insert({
+          org_id: targetOrgId,
+          customer_name: displayName,
+          customer_identifier: visitorId,
+          channel: 'shopify',
+          last_message: message || 'Attachment',
+          status: 'open',
+          message_count: 0,
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (convErr) {
+        console.error('[shopifyController] Failed to create conversation in Supabase:', convErr);
+      }
+      conv = newConv;
+    }
+
+    // // Save Customer Incoming Message
+    if (conv?.id) {
+      await supabase.from('messages').insert({
+  conversation_id: conv.id,
+  org_id: targetOrgId,            // <--- এই লাইনটি যোগ করুন
+  sender: 'customer',
+  content: message || '',
+  image_url: image || null,
+  created_at: new Date().toISOString()
+})
+    }
+
+    // // Check if Human Agent Paused AI for this conversation
+    if (conv && conv.ai_active === false) {
+      console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
+      return res.status(200).json({
+        conversation_id: conv?.id,
+        success: true,
+        reply: null,
+        handover: true
+      });
+    }
+
+    // // Fetch Recent Chat History for Context (if not provided by widget)
+    let finalHistory = conversationHistory;
+    if ((!finalHistory || finalHistory.length === 0) && conv?.id) {
+      const { data: dbHistory } = await supabase
+        .from('messages')
+        .select('sender, content')
+        .eq('conversation_id', conv.id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      finalHistory = (dbHistory || []).reverse().map(m => ({
+        direction: m.sender === 'customer' ? 'incoming' : 'outgoing',
+        message: m.content
+      }));
+    }
+
+    // // D. Delegate to AI Agent Service
     const aiResponse = await handleCustomerMessage({
       customerMessage: message,
       orgId: targetOrgId,
-      conversationHistory,
+      conversationHistory: finalHistory,
       imageUrl: image || null,
       audioUrl: audio || null
     });
 
-    return res.status(200).json({
-      success: true,
-      reply: aiResponse?.reply || "Hello! How can I assist you today?",
-      orderData: aiResponse?.orderData || null,
-      image_url: aiResponse?.image_url || null,
-      handover: Boolean(aiResponse?.handover)
-    });
+    const replyText = typeof aiResponse === 'string' ? aiResponse : (aiResponse?.reply || "Hello! How can I assist you today?");
+
+    // // Save Bot Response to Unified Inbox
+    if (conv?.id && replyText) {
+      await supabase.from('messages').insert({
+  conversation_id: conv.id,
+  org_id: targetOrgId,            // <--- এই লাইনটি যোগ করুন
+  sender: 'bot',
+  content: replyText,
+  created_at: new Date().toISOString()
+})
+
+      await supabase
+        .from('conversations')
+        .update({
+          last_message: replyText,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', conv.id);
+    }
+
+  return res.status(200).json({
+  success: true,
+  reply: replyText,
+  conversation_id: conv?.id, // <--- এই লাইনটি যোগ করুন
+  orderData: aiResponse?.orderData || null,
+  imageUrl: aiResponse?.imageUrl || null,
+  handover: Boolean(aiResponse?.handover)
+});
   } catch (error) {
     console.error('[shopifyController] handleStorefrontChat Fatal Error:', error);
     return res.status(200).json({
       success: false,
-      reply: "We are currently experiencing technical difficulties. Please try again in a moment."
+      reply: "We are currently experiencing technical difficulties. Please try again in a moment.",
+      conversation_id: conv?.id    // <--- শুধু এই লাইনটি যোগ করুন
     });
   }
 };
-  
 // =========================================================================
 // 4. SHOPIFY WEBHOOK RECEIVER (REAL-TIME AUTO SYNC)
 // =========================================================================

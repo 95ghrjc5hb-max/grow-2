@@ -16,9 +16,7 @@ const PRESET_FIELDS = [
 
 export default function BotConfigModal({ isOpen, onClose, configForm, onSave }) {
   const [form, setForm] = useState({
-    provider: 'Groq Cloud',
-    model: 'llama-3.1-8b-instant',
-    api_key: '',
+    support_contact: '',
     system_prompt: '',
   });
 
@@ -38,13 +36,10 @@ const [isAddingDelivery, setIsAddingDelivery] = useState(false);
   useEffect(() => {
     if (isOpen && configForm) {
       setForm({
-        provider: configForm.provider || configForm.llm_provider || 'Groq Cloud',
-        model: configForm.model || configForm.model_name || 'llama-3.1-8b-instant',
-        api_key: configForm.api_key || '',
+        support_contact: configForm.support_contact || '',
         system_prompt: configForm.system_prompt || '',
       });
 
-      // If database has saved fields, load them. Otherwise, load default fields.
       if (Array.isArray(configForm.order_capture_fields) && configForm.order_capture_fields.length > 0) {
         setSelectedFields(configForm.order_capture_fields);
       } else {
@@ -55,10 +50,11 @@ const [isAddingDelivery, setIsAddingDelivery] = useState(false);
           { id: 'product_quantity', label: 'Product Quantity' },
         ]);
       }
-    }
-    if (Array.isArray(configForm.delivery_rules)) {
+
+      if (Array.isArray(configForm.delivery_rules)) {
         setDeliveryRules(configForm.delivery_rules);
       }
+    }
   }, [isOpen, configForm]);
 
   if (!isOpen) return null;
@@ -122,8 +118,9 @@ const handleRemoveDeliveryRule = (ruleId) => {
   const handleSubmit = (e) => {
     e.preventDefault();
     onSave({
-      ...form,
-      order_capture_fields: selectedFields, // Ensures both preset and custom fields are sent
+      support_contact: form.support_contact,
+      system_prompt: form.system_prompt,
+      order_capture_fields: selectedFields,
       delivery_rules: deliveryRules,
     });
     onClose();
@@ -145,39 +142,22 @@ const handleRemoveDeliveryRule = (ruleId) => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Provider & Model */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs text-slate-400">AI Provider</label>
-              <input
-                type="text"
-                value={form.provider}
-                onChange={(e) => setForm({ ...form, provider: e.target.value })}
-                className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-slate-400">Model</label>
-              <input
-                type="text"
-                value={form.model}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-                className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
-              />
-            </div>
-          </div>
-
-          {/* API Key */}
-          <div>
-            <label className="text-xs text-slate-400">API Key (Optional / Custom Key)</label>
-            <input
-              type="password"
-              placeholder="gsk_..."
-              value={form.api_key}
-              onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-              className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
-            />
-          </div>
+                  {/* Human Support / Escalation Contact */}
+        <div>
+          <label className="text-xs text-slate-300 font-medium">
+            Human Support & Escalation Contact
+          </label>
+          <input
+            type="text"
+            placeholder="e.g. Email, phone number, helpdesk link, or social handle..."
+            value={form.support_contact}
+            onChange={(e) => setForm({ ...form, support_contact: e.target.value })}
+            className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
+          />
+          <p className="text-[11px] text-slate-400 mt-1">
+            When the AI cannot answer an unknown query after 1-2 attempts, it will provide this contact directly to the customer.
+          </p>
+        </div>
 
           {/* System Prompt */}
           <div>
@@ -190,7 +170,7 @@ const handleRemoveDeliveryRule = (ruleId) => {
               className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
             />
           </div>
-
+          
           {/* AI Order Capture Fields */}
           <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4 space-y-3">
             <div>

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { 
   Package, Zap, MessageSquare, DollarSign, 
-  ArrowUpRight, Loader2, RefreshCw, ShoppingBag, ExternalLink 
+  ArrowUpRight, Loader2, RefreshCw, ShoppingBag, ExternalLink, CreditCard 
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -127,6 +127,7 @@ const useRealtimeDashboard = () => {
 };
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const { stats, loading, error, refetch } = useRealtimeDashboard();
 
   // Memoized Table Rows for Optimized Rendering Performance
@@ -179,15 +180,29 @@ export default function Dashboard() {
             Welcome back. Here's your business performance overview.
           </p>
         </div>
-        <Button
-          onClick={() => refetch(true)}
-          disabled={loading}
-          variant="outline"
-          className="w-fit bg-slate-900/60 border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 text-xs h-9 transition-all"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 mr-2 ${loading ? "animate-spin text-teal-400" : ""}`} />
-          {loading ? "Syncing..." : "Sync Data"}
-        </Button>
+
+        <div className="flex items-center gap-3">
+                   {/* 💳 Billing & Usage Button */}
+          <Button
+            onClick={() => navigate('/settings', { state: { activeTab: 'billing' } })}
+            variant="outline"
+            className="w-fit bg-slate-900/60 border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800/80 transition-all text-xs sm:text-sm"
+          >
+            <CreditCard className="w-3.5 h-3.5 mr-2 text-teal-400" />
+            Billing & Usage
+          </Button>
+
+          {/* 🔄 Sync Data Button */}
+          <Button
+            onClick={() => refetch(true)}
+            disabled={loading}
+            variant="outline"
+            className="w-fit bg-slate-900/60 border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800/80 transition-all text-xs sm:text-sm"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 mr-2 ${loading ? "animate-spin text-teal-400" : ""}`} />
+            {loading ? "Syncing..." : "Sync Data"}
+          </Button>
+        </div>
       </div>
 
       {/* Global State Handling: Error Boundary & Loading View */}

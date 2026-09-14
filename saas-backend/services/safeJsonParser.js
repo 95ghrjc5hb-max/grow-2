@@ -1,68 +1,74 @@
+// services/safeJsonParser.js
+
 const FALLBACK_RESPONSE = Object.freeze({
-  reply: "Thank you for reaching out. We are currently looking into this, and a customer support representative will assist you shortly.",
+  reply: "Thank you for reaching out. How can I assist you with our products today?",
   orderData: null,
   image_url: null,
-  handover: true
+  handover: false
 });
 
-const REQUIRED_ORDER_FIELDS = ['customerName', 'phone', 'address', 'products', 'totalPrice'];
-
-function tryParse(text) {
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed;
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
-function normalize(obj) {
-  if (!obj || typeof obj !== 'object') {
-    return { ...FALLBACK_RESPONSE };
-  }
-
- let orderData = null;
-  if (obj.orderData && typeof obj.orderData === 'object' && !Array.isArray(obj.orderData)) {
-    orderData = obj.orderData;
-  }
-
-  return {
-    reply: typeof obj.reply === 'string' && obj.reply.trim() ? obj.reply.trim() : FALLBACK_RESPONSE.reply,
-    image_url: typeof obj.image_url === 'string' && obj.image_url.trim() ? obj.image_url.trim() : null,
-    orderData: orderData,
-    handover: typeof obj.handover === 'boolean' ? obj.handover : false
-  };
-}
-
 export function safeParseAIResponse(rawContent) {
+  // ১. টার্মিনালে আসল আউটপুট দেখার জন্য লগ (ডিবাগিংয়ের জন্য সেরা)
+  console.log("\n--- [RAW AI OUTPUT] ---\n", rawContent, "\n-----------------------\n");
+
   if (!rawContent || typeof rawContent !== 'string') {
-    return { ...FALLBACK_RESPONSE };
+    return FALLBACK_RESPONSE;
   }
 
-  const trimmed = rawContent.trim();
+  try {
+    // ২. টেক্সট থেকে শুধু { ... } JSON অংশটুকু নিখুঁতভাবে বের করা
+    const firstBrace = rawContent.indexOf('{');
+    const lastBrace = rawContent.lastIndexOf('}');
 
-  // Step 1: Direct JSON parse
-  const direct = tryParse(trimmed);
-  if (direct) return normalize(direct);
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      const jsonCandidate = rawContent.slice(firstBrace, lastBrace + 1);
+      
+      try {
+        const parsed = JSON.parse(jsonCandidate);
+        
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          // ৩. AI মাঝেমাঝে 'reply' এর বদলে 'message' বা 'response' কী (key) ব্যবহার করে, তাই সব অপশন চেক করা
+          let aiReply = parsed.reply || parsed.message || parsed.response || parsed.text || parsed.answer;
+          
+          if (!aiReply || aiReply.trim() === "") {
+             aiReply = "I understand. Let me check our inventory for you."; 
+          }
 
-  // Step 2: Extract substring if AI wraps JSON in markdown
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const substring = trimmed.slice(firstBrace, lastBrace + 1);
-    const extracted = tryParse(substring);
-    if (extracted) return normalize(extracted);
+          return {
+            reply: aiReply.trim(),
+            image_url: parsed.image_url && parsed.image_url !== 'null' ? parsed.image_url : null,
+            orderData: parsed.orderData || null,
+            handover: parsed.handover === true
+          };
+        }
+      } catch (jsonError) {
+        console.error("[JSON Parse Error]:", jsonError.message);
+      }
+    }
+
+    // ৪. যদি JSON পার্স ফেইল করে, তবে  রিমুভ করে ক্লিন টেক্সট রিটার্ন করা
+    let cleanText = rawContent.replace(/[\s\S]*?<\/think>/gi, '').trim();
+    
+    // যদি আনক্লোজড  থেকে যায়
+    if (cleanText.includes('')) {
+       cleanText = cleanText.split('')[0].trim();
+    }
+    
+    cleanText = cleanText.replace(/```(?:json)?([\s\S]*?)```/gi, '$1').trim();
+
+    if (cleanText.length > 2) {
+      return {
+        reply: cleanText,
+        orderData: null,
+        image_url: null,
+        handover: false
+      };
+    }
+
+    return FALLBACK_RESPONSE;
+
+  } catch (err) {
+    console.error("[Parser Critical Error]:", err.message);
+    return FALLBACK_RESPONSE;
   }
-
-  // Step 3: Total Failure Fallback
-  return {
-    reply: trimmed.slice(0, 2000),
-    orderData: null,
-    image_url: null,
-    handover: false
-  };
 }

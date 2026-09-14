@@ -1,7 +1,7 @@
+import 'dotenv/config';
 import express from 'express';
 // mongoose import removed as the system is fully migrated to Supabase
 import cors from 'cors';
-import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import helmet from 'helmet';
@@ -28,7 +28,6 @@ import shopifyRoutes from './routes/shopifyRoutes.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config({ path: './.env' });
 
 // ==========================================
 // 1. SYSTEM INITIALIZATION

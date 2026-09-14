@@ -76,13 +76,13 @@ export const sendManualMessage = async (req, res) => {
 
     // 3. Save manual agent message to Supabase
     if (conversationId) {
-        const { error: dbError } = await supabase.from('messages').insert({
-            conversation_id: conversationId,
-            sender: 'agent',
-            content: messageText,
-            created_at: new Date()
-        });
-
+  const { error: dbError } = await supabase.from('messages').insert({
+    conversation_id: conversationId,
+    org_id: orgId,                     // <--- শুধু এই লাইনটি যোগ করুন
+    sender: 'agent',
+    content: messageText,
+    created_at: new Date().toISOString()
+  })
         if (dbError) throw dbError;
 
         // 4. Update the last message in the conversations table

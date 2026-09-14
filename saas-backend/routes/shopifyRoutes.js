@@ -1,5 +1,5 @@
 import express from 'express';
-import { authenticateToken } from '../middleware/authMiddleware.js'; 
+import { authenticateToken, verifyShopifyWebhook } from '../middleware/authMiddleware.js';
 import {
   beginShopifyAuth,
   handleShopifyCallback,
@@ -27,7 +27,7 @@ router.get('/callback', handleShopifyCallback);
 router.post('/chat', handleStorefrontChat);
 
 // Route: POST /api/shopify/webhook
-router.post('/webhook', handleShopifyWebhook);
+router.post('/webhook', verifyShopifyWebhook, handleShopifyWebhook);
 
 // ---------------------------------------------------------
 // 3. SHOPIFY BILLING ROUTES (NEW)

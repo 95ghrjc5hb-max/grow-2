@@ -4,9 +4,8 @@ import { Grow } from "@/api/GrowClient";
 import { Plus, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-
+import AiConfigBanner from '../components/bot-training/AiConfigBanner';
 // Sub-components Import
-import AIConfigBanner from "../components/bot-training/AIConfigBanner";
 import ProductTable from "../components/bot-training/ProductTable";
 import ProductModal from "../components/bot-training/ProductModal";
 import BotConfigModal from "../components/bot-training/BotConfigModal";
@@ -31,13 +30,11 @@ export default function BotTraining() {
   });
 
   const [configForm, setConfigForm] = useState({
-    provider: "Groq Cloud",
-    model: "llama-3.1-8b-instant",
-    api_key: "",
-    system_prompt: "",
+    support_contact: '',
+    system_prompt: '',
     order_capture_fields: [],
     delivery_rules: [],
-    currency_symbol: "$",
+    currency_symbol: '$',
   });
 
   // 1. Fetch Products & Bot Config from Supabase on load
@@ -86,13 +83,11 @@ export default function BotTraining() {
       if (configs && configs.length > 0) {
         setBotConfig(configs[0]);
         setConfigForm({
-          provider: configs[0].llm_provider || "Groq Cloud",
-          model: configs[0].model_name || "llama-3.1-8b-instant",
-          api_key: configs[0].api_key || "",
-          system_prompt: configs[0].system_prompt || "",
+          support_contact: configs[0].support_contact || '',
+          system_prompt: configs[0].system_prompt || '',
           order_capture_fields: configs[0].order_capture_fields || [],
           delivery_rules: configs[0].delivery_rules || [],
-          currency_symbol: configs[0].currency_symbol || "$",
+          currency_symbol: configs[0].currency_symbol || '$',
         });
       }
       } catch (error) {
@@ -104,7 +99,16 @@ export default function BotTraining() {
 
     fetchData();
   }, []);
-
+const resetForm = () => {
+    setForm({
+      name: "",
+      price: "",
+      description: "",
+      stock_status: "in_stock",
+      image_url: "",
+    });
+    setEditingProduct(null);
+  };
     const handleSaveProduct = async () => {
     if (!form.name || !form.price) {
       toast({ title: "Name and Price are required", variant: "destructive" });
@@ -218,13 +222,11 @@ export default function BotTraining() {
   const handleSaveConfig = async (formData) => {
     try {
       const payload = {
-        llm_provider: formData.provider,
-        model_name: formData.model,
-        api_key: formData.api_key,
+        support_contact: formData.support_contact,
         system_prompt: formData.system_prompt,
         order_capture_fields: formData.order_capture_fields || [],
         delivery_rules: formData.delivery_rules || [],
-        currency_symbol: formData.currency_symbol || "$",
+        currency_symbol: formData.currency_symbol || '$',
         org_id: userOrgId,
       };
 
@@ -301,11 +303,10 @@ export default function BotTraining() {
       </div>
 
     {/* AI Config Banner Component */}
-        <AIConfigBanner
-          model={configForm.model}
-          apiKey={botConfig?.api_key}
-          onConfigure={() => setShowConfigModal(true)}
-        />
+        <AiConfigBanner
+  onConfigure={() => setShowConfigModal(true)}
+/>
+
 
         {/* Product Table Component */}
         <ProductTable

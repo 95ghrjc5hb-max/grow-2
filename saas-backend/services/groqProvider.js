@@ -1,100 +1,96 @@
-import Groq from 'groq-sdk';
+// services/groqProvider.js
 
-const TEXT_MODELS_PRIORITY = [
-  'openai/gpt-oss-120b', 
-  'qwen/qwen3.8-27b'
+const TEXT_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b"
 ];
-const VISION_MODELS_PRIORITY = [
-  'qwen/qwen3.6-27b' 
-];
-const WHISPER_MODEL = 'whisper-large-v3';
 
-function getGroqClient(apiKey) {
-  const resolvedKey = apiKey || process.env.GROQ_API_KEY;
-  if (!resolvedKey) throw new Error('Groq API Key is missing.');
-  return new Groq({ apiKey: resolvedKey });
+const VISION_MODELS = [
+    "qwen/qwen3.8-27b"
+];
+
+const AUDIO_MODEL = "whisper-large-v3";
+
+export async function callGroqChat({ messages, apiKey, isVision = false }) {
+    if (!apiKey) throw new Error("Groq API Key is missing.");
+    const cleanKey = apiKey.trim().replace(/^["']|["']$/g, '');
+    const modelList = isVision ? VISION_MODELS : TEXT_MODELS;
+    let lastError = null;
+
+    for (const model of modelList) {
+        try {
+            const payload = {
+                model,
+                messages: messages.map(m => ({
+                    role: m.role,
+                    content: m.content
+                })),
+                temperature: 0.2,
+                max_tokens: 1000
+            };
+
+            if (!isVision) {
+                payload.response_format = { type: "json_object" };
+            }
+
+            const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${cleanKey}`, // ব্যাকটিক (``) ফিক্সড
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                return data.choices?.[0]?.message?.content;
+            } else {
+                const errText = await res.text();
+                console.warn(`[GroqProvider] ${model} failed (${res.status}): ${errText}`);
+                lastError = new Error(errText);
+            }
+        } catch (err) {
+            console.warn(`[GroqProvider] ${model} network error: ${err.message}`);
+            lastError = err;
+        }
+    }
+
+    throw lastError || new Error("All Groq models failed.");
 }
 
-// 🎙️ GLOBAL MULTILINGUAL AUDIO TRANSCRIPTION
 export async function transcribeAudioWithGroq(audioUrl, apiKey = null) {
-  try {
-    if (!audioUrl) return null;
-    const response = await fetch(audioUrl);
-    if (!response.ok) throw new Error(`Failed to download audio: ${response.statusText}`);
-
-    const contentType = response.headers.get('content-type') || 'audio/m4a';
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    let fileExt = 'm4a';
-    if (contentType.includes('ogg')) fileExt = 'ogg';
-    else if (contentType.includes('mp4') || contentType.includes('m4a')) fileExt = 'm4a';
-    else if (contentType.includes('wav')) fileExt = 'wav';
-    else if (contentType.includes('mp3') || contentType.includes('mpeg')) fileExt = 'mp3';
-
-    const formData = new FormData();
-    const blob = new Blob([buffer], { type: contentType });
-    formData.append('file', blob, `audio_input.${fileExt}`);
-    formData.append('model', WHISPER_MODEL);
-
-    const activeKey = apiKey || process.env.GROQ_API_KEY;
-    const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${activeKey}` },
-      body: formData,
-    });
-
-    const result = await groqRes.json();
-    if (result && result.text && result.text.trim()) {
-      return result.text.trim();
-    }
-    return null;
-  } catch (err) {
-    console.error('[groqProvider] Transcribe Error:', err.message);
-    return null;
-  }
-}
-
-// 💬 FAST TEXT & VISION COMPLETION
-export async function callGroqChat({ messages, apiKey, modelPriority = null, isVision = false }) {
-  const groq = getGroqClient(apiKey);
-  
-  const baseList = isVision ? VISION_MODELS_PRIORITY : TEXT_MODELS_PRIORITY;
-  const modelsToTry = modelPriority 
-    ? [modelPriority, ...baseList.filter(m => m !== modelPriority)]
-    : baseList;
-
-  // Preserve the array if it contains image_url for Groq Vision
-  const safeMessages = messages.map((m) => {
-    let role = (m.role === 'system' || m.role === 'assistant') ? m.role : 'user';
-    
-    let finalContent = m.content;
-    if (!Array.isArray(m.content)) {
-        finalContent = String(m.content || '');
-    }
-
-    return { role, content: finalContent };
-  });
-
-  let lastError = null;
-
-  for (const model of modelsToTry) {
     try {
-      const chatCompletion = await groq.chat.completions.create({
-        messages: safeMessages,
-        model,
-        temperature: 0.3,
-        max_tokens: 1024,
-        response_format: { type: 'json_object' }, 
-      });
+        if (!audioUrl) return null;
+        const cleanKey = (apiKey || process.env.GROQ_API_KEY_1 || process.env.GROQ_API_KEY || "").trim();
+        if (!cleanKey) throw new Error("Groq API Key missing for audio.");
 
-      const content = chatCompletion.choices?.[0]?.message?.content;
-      if (content) return content;
+        const response = await fetch(audioUrl);
+        if (!response.ok) throw new Error(`Audio fetch failed: ${response.statusText}`);
+
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        const formData = new FormData();
+        const blob = new Blob([buffer], { type: 'audio/m4a' });
+        formData.append('file', blob, 'audio_input.m4a');
+        formData.append('model', AUDIO_MODEL);
+
+        const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${cleanKey}` }, // ব্যাকটিক (``) ফিক্সড
+            body: formData
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            return data.text?.trim() || null;
+        }
+        return null;
+        
     } catch (err) {
-      lastError = err;
-      console.warn(`[groqProvider] Model ${model} failed (${err.message}). Trying fallback...`);
+        console.error('[GroqProvider Audio Error]:', err.message);
+        return null;
     }
-  }
-
-  throw lastError || new Error('All configured Groq models failed.');
 }
