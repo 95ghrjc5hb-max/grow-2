@@ -1,6 +1,5 @@
 import crypto from 'crypto';
 import { supabase } from '../config/supabase.js';
-import { supabase } from '../config/supabase.js';
 import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.js';
 import { createShopifyOrder } from '../services/shopifyService.js';
 import { getNotificationSettings, getBillingUsage } from '../services/settingsService.js';

@@ -1,7 +1,7 @@
 import express from "express";
 import * as settingsController from "../controllers/settingsController.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
-
+import { verifyWorkspaceAccess } from "../middleware/workspaceGuard.js";
 const router = express.Router();
 
 // Auth Middleware সক্রিয় করা হলো
@@ -15,6 +15,8 @@ router.post("/profile/2fa", settingsController.setTwoFactor);
 router.get("/profile/sessions", settingsController.listSessions);
 router.delete("/profile/sessions/:sessionId", settingsController.revokeSession);
 router.delete("/profile", settingsController.deleteAccount);
+// Workspace IDOR Protection Middleware (নিচের সব ওয়ার্কস্পেস রাউটের জন্য)
+router.use(verifyWorkspaceAccess);
 // -- Store & Workspace --
 router.get("/workspace", settingsController.getWorkspace);
 router.patch("/workspace", settingsController.updateWorkspace);
