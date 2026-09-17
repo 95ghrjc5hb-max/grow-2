@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import { supabase } from '../config/supabase.js';
 import { supabase } from '../config/supabase.js';
 import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.js';
 import { createShopifyOrder } from '../services/shopifyService.js';
@@ -118,7 +120,40 @@ const syncOrderToShopify = async (orgId, orderData) => {
 
 // Central Omnichannel Webhook Receiver
 export const handleMetaWebhook = async (req, res) => {
+  // 1. CRYPTOGRAPHIC SECURITY: Verify Meta HMAC-SHA256 Signature
+  const signature = req.headers['x-hub-signature-256'];
+  const appSecret = process.env.META_APP_SECRET;
+
+  if (process.env.NODE_ENV === 'production' || signature) {
+    if (!signature || !appSecret) {
+      console.error('Security Alert: Missing Meta signature or META_APP_SECRET');
+      return res.status(401).json({ error: 'Unauthorized webhook request' });
+    }
+
+    const elements = signature.split('=');
+    const signatureHash = elements[1];
+
+    // Calculate expected hash using captured rawBody
+    const expectedHash = crypto
+      .createHmac('sha256', appSecret)
+      .update(req.rawBody || JSON.stringify(req.body))
+      .digest('hex');
+
+    // Timing-safe evaluation against timing attacks
+    const isSignatureValid = crypto.timingSafeEqual(
+      Buffer.from(signatureHash, 'utf8'),
+      Buffer.from(expectedHash, 'utf8')
+    );
+
+    if (!isSignatureValid) {
+      console.warn('Security Alert: Fake Meta webhook detected! Request dropped.');
+      return res.status(403).json({ error: 'Invalid HMAC signature' });
+    }
+  }
+
+  // Acknowledge Meta immediately to prevent retry-loops and connection holding
   res.status(200).send('EVENT_RECEIVED');
+
   const body = req.body;
 
   // =========================================================================

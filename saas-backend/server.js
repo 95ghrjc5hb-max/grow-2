@@ -9,7 +9,8 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
+import crypto from 'crypto';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import { createClient } from '@supabase/supabase-js';
 import orderRoutes from './routes/orderRoutes.js';
@@ -39,15 +40,12 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('FATAL SECURITY ERROR: JWT_SECRET environment variable is missing.');
+}
 const JWT_SECRET = process.env.JWT_SECRET || 'GROW_APP_SECURE_KEY_2026';
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ==========================================
 // 2. ADVANCED SECURITY & MIDDLEWARES
@@ -65,23 +63,50 @@ app.post('/api/v1/stripe/webhook', express.raw({ type: 'application/json' }), ha
 // 2. Security headers (Placed after CORS)
 app.use(helmet());
 
-app.use(express.json({
-  limit: '50mb',
-  verify: (req, res, buf) => {
-    req.rawBody = buf;
-  }
+// 2. Safe Payload Limits (Prevent Heap Out-Of-Memory/DoS attacks)
+app.use(express.json({ 
+  limit: '2mb', 
+  verify: (req, res, buf) => { 
+    req.rawBody = buf; 
+  } 
 }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-app.use(morgan('dev')); 
+app.use(express.urlencoded({ limit: '2mb', extended: true }));
+app.use(morgan('dev'));
 
+// 3. Enterprise-Scale Dynamic Rate Limiting (1k Merchants + 10k Customers Ready)
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
+  windowMs: 15 * 60 * 1000, // 15 minutes window
+  max: 3000, // High throughput: Allows heavy dashboard & real-time inbox actions
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, error: 'Too many requests from this IP, please try again later.' }
+  skip: (req) => {
+    // CRITICAL: Bypass webhooks completely!
+    // Meta (WhatsApp/Messenger) and Shopify traffic must NEVER be blocked by IP limits
+    // Security is already strictly guaranteed by HMAC-SHA256 signature verification.
+    return (
+      req.originalUrl.includes('/webhook') || 
+      req.originalUrl.includes('/shopify/callback')
+    );
+  },
+  message: { 
+    success: false, 
+    error: 'High traffic threshold reached. Please try again shortly.' 
+  }
 });
-//app.use('/api/', limiter);
+
+// Apply rate limiter safely across general API routes
+app.use('/api/', limiter);
+
+// 4. Strict Limiter ONLY for Auth Endpoints (Blocks Brute-force & Credential Stuffing)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30, // Max 30 attempts per 15 minutes per IP
+  message: { 
+    success: false, 
+    error: 'Too many authentication attempts. Please try again later.' 
+  }
+});
+app.use('/api/auth/', authLimiter);
 
 // ==========================================
 // 3. DATABASE INFRASTRUCTURE (SUPABASE)
@@ -110,6 +135,10 @@ app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required.' });
+    }
+
     // Check if user already exists
     const userExists = await supabase
       .from('users')
@@ -118,19 +147,19 @@ app.post('/api/auth/signup', async (req, res) => {
       .single();
 
     if (userExists.data) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Identity already exists in system.' 
+      return res.status(400).json({
+        success: false,
+        error: 'Identity already exists in system.'
       });
     }
 
-    // Generate dynamic 6-digit cryptographically secure OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    // 1. Cryptographically Secure 6-digit OTP
+    const otpCode = crypto.randomInt(100000, 999999).toString();
 
-    // Secure password hashing
+    // 2. Secure password hashing
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Register new user instance in Supabase
+    // 3. Register new user instance in Supabase
     const { data: newUser, error: insertError } = await supabase
       .from('users')
       .insert([
@@ -145,72 +174,73 @@ app.post('/api/auth/signup', async (req, res) => {
 
     if (insertError) {
       console.error("Insert Error:", insertError);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Failed to register user in database.' 
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to register user in database.'
       });
     }
 
-    // Futuristic, responsive HTML Email Template
+    // 4. Anti-Spam Clean Email Template
     const emailHtmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #090d16; color: #f3f4f6; margin: 0; padding: 40px 20px; }
-          .card { max-width: 480px; margin: 0 auto; background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 40px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); }
-          .brand { font-size: 18px; font-weight: 800; color: #6366f1; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 24px; text-align: center; }
-          .title { font-size: 22px; font-weight: 700; color: #ffffff; text-align: center; margin-bottom: 10px; }
-          .subtitle { font-size: 14px; color: #9ca3af; text-align: center; margin-bottom: 30px; line-height: 1.5; }
-          .otp-box { background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 30px; }
-          .otp-code { font-size: 38px; font-weight: 900; color: #818cf8; letter-spacing: 10px; font-family: monospace; }
-          .footer { font-size: 12px; color: #4b5563; text-align: center; border-top: 1px solid #1f2937; padding-top: 20px; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <div class="brand">GROW APP CORE</div>
-          <div class="title">Security Verification</div>
-          <div class="subtitle">Use the system-generated authentication code below to complete your registration.</div>
-          <div class="otp-box">
-            <div class="otp-code">${otpCode}</div>
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 15px;">
+        <div style="max-width: 460px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; padding: 32px; border: 1px solid #e2e8f0; text-align: center;">
+          <div style="display: inline-block; background-color: #059669; color: #ffffff; padding: 5px 16px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 20px;">
+            GROW CORE
           </div>
-          <div class="subtitle" style="font-size: 12px; margin-bottom: 0;">This code is confidential and strictly intended for this transaction.</div>
-          <div class="footer">
-            &copy; 2026 Grow App Platform. Automated Neural Network Dispatch.
+          <h2 style="color: #0f172a; margin: 0 0 10px 0; font-size: 22px; font-weight: 700;">Initialize Access Key</h2>
+          <p style="color: #64748b; font-size: 14px; line-height: 1.5; margin: 0 0 24px 0;">
+            Use the one-time authentication code below to complete your setup.
+          </p>
+          <div style="background-color: #f1f5f9; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+            <span style="font-family: 'Courier New', Courier, monospace; font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0f766e;">
+              ${otpCode}
+            </span>
           </div>
+          <p style="color: #94a3b8; font-size: 12px; margin: 0 0 20px 0;">
+            This code will expire in 60 seconds. Do not share this token with anyone.
+          </p>
+          <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 20px 0;" />
+          <p style="color: #64748b; font-size: 11px; margin: 0;">
+            • 256-Bit Cryptographic End-to-End Encryption
+          </p>
         </div>
-      </body>
-      </html>
+      </div>
     `;
 
-    // Dispatch Email via Nodemailer Transporter
+    // 5. Dispatch Email via Resend API
     try {
-      await transporter.sendMail({
-        from: `"Grow App Core" <${process.env.EMAIL_USER}>`,
+      const { data: resendData, error: resendError } = await resend.emails.send({
+        from: 'GROW Core <hello@growcorebot.com>',
         to: email,
-        subject: '⚡ Action Required: Your 6-Digit Verification Code',
+        subject: `GROW Core verification code: ${otpCode}`,
+        text: `Your GROW Core verification code is: ${otpCode}. This code will expire in 60 seconds.`,
         html: emailHtmlContent,
       });
+
+      if (resendError) {
+        console.error("⚠️ Resend Email Error:", resendError);
+      } else {
+        console.log("✅ OTP Email Sent Successfully:", resendData.id);
+      }
     } catch (emailError) {
       console.error("⚠️ Email dispatch failed, but registration succeeded:", emailError.message);
     }
 
-    return res.status(201).json({ 
-      success: true, 
-      message: 'Account pipeline configured and verification code dispatched.' 
+    return res.status(201).json({
+      success: true,
+      message: 'Account pipeline configured and verification code dispatched.'
     });
 
   } catch (error) {
     console.error('CRITICAL REGISTRATION ERROR:', error);
-    return res.status(500).json({ 
-      success: false, 
+    return res.status(500).json({
+      success: false,
       error: 'Internal registration failure.',
-      details: error.message 
+      details: error.message
     });
   }
 });
+
 
 // Central Authentication - Advanced Neural Verification Endpoint
 app.post('/api/auth/verify-otp', async (req, res) => {

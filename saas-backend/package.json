@@ -26,6 +26,7 @@
     "mongoose": "^9.8.0",
     "morgan": "^1.11.0",
     "nodemailer": "^9.0.3",
+    "resend": "^6.28.0",
     "stripe": "^22.5.0"
   },
   "devDependencies": {

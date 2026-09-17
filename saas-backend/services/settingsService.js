@@ -66,9 +66,8 @@ const getUserSupabase = (userToken) => {
 };
 
 async function getProfile(userId, userToken) {
-  
- const userSupabase = getUserSupabase(userToken);
-  const { data, error } = await userSupabase
+  const userSupabase = getUserSupabase(userToken);
+  let { data, error } = await userSupabase
     .from("profiles")
     .select("*")
     .eq("id", userId)
@@ -76,6 +75,68 @@ async function getProfile(userId, userToken) {
 
   assertNoError(error, "Failed to load profile");
 
+  // SELF-HEALING: Profile row missing in Supabase -> Auto Provision on-demand
+  if (!data) {
+    let fallbackEmail = "";
+    let fallbackName = "New User";
+    let fallbackAvatar = null;
+
+    // 1. Instantly extract user identity directly from JWT token (zero latency)
+    try {
+      if (userToken) {
+        const payloadBase64 = userToken.split(".")[1];
+        const payloadJson = Buffer.from(payloadBase64, "base64").toString("utf8");
+        const decoded = JSON.parse(payloadJson);
+        fallbackEmail = decoded.email || "";
+        fallbackName =
+          decoded.user_metadata?.full_name ||
+          decoded.user_metadata?.name ||
+          (decoded.email ? decoded.email.split("@")[0] : "New User");
+        fallbackAvatar = decoded.user_metadata?.avatar_url || null;
+      }
+    } catch (tokenErr) {
+      console.warn("Token decoding failed for fallback:", tokenErr.message);
+    }
+
+    // 2. If email still not found, fetch directly via Supabase Admin API
+    if (!fallbackEmail) {
+      try {
+        const { data: authUser } = await supabase.auth.admin.getUserById(userId);
+        if (authUser?.user) {
+          fallbackEmail = authUser.user.email || "";
+          fallbackName =
+            authUser.user.user_metadata?.full_name ||
+            authUser.user.user_metadata?.name ||
+            (authUser.user.email ? authUser.user.email.split("@")[0] : "New User");
+          fallbackAvatar = authUser.user.user_metadata?.avatar_url || null;
+        }
+      } catch (adminErr) {
+        console.warn("Supabase admin fallback failed:", adminErr.message);
+      }
+    }
+
+    // 3. Upsert profile safely using Admin Client (bypassing RLS)
+    const { data: createdProfile, error: createError } = await supabase
+      .from("profiles")
+      .upsert(
+        {
+          id: userId,
+          full_name: fallbackName,
+          email: fallbackEmail,
+          avatar_url: fallbackAvatar,
+          role: "owner"
+        },
+        { onConflict: "id" }
+      )
+      .select("*")
+      .single();
+
+    if (!createError && createdProfile) {
+      data = createdProfile;
+    }
+  }
+
+  // Exact same contract expected by the frontend
   return {
     id: userId,
     fullName: data?.full_name || "New User",
@@ -85,7 +146,6 @@ async function getProfile(userId, userToken) {
     twoFactorEnabled: data?.two_factor_enabled || false,
   };
 }
-
 async function updateProfile(userId, workspaceId, { fullName, email, phone }) {
   // FIXED: Changed update() to upsert() to create a row if it doesn't exist
   const { data, error } = await supabase

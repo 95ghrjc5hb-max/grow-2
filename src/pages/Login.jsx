@@ -57,12 +57,17 @@ export default function Login() {
     }
   };
 
-    const handleGoogle = async () => {
+    
+  const handleGoogle = async () => {
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/dashboard`,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'select_account' // Forces Google to display the account picker screen every time
+          }
         },
       });
       if (error) throw error;

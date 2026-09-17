@@ -51,7 +51,7 @@ const useRealtimeDashboard = () => {
       const orgId = memberData?.org_id || user.id;
 
       // ৩. প্রতিটি কোয়েরিতে .eq('org_id', orgId) দিয়ে ফিল্টার করা
-      const [
+const [
         ordersResponse,
         channelsResponse,
         conversationsResponse,
@@ -60,15 +60,14 @@ const useRealtimeDashboard = () => {
       ] = await Promise.all([
         supabase.from('orders').select('id', { count: 'exact', head: true }).eq('org_id', orgId),
         supabase.from('integrations').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('is_connected', true),
-        supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'active'),
-        supabase.from('orders').select('amount, created_at').eq('org_id', orgId),
+        supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('status', ['active', 'open']),
+        supabase.from('orders').select('amount, total_amount, created_at').eq('org_id', orgId),
         supabase.from('orders')
-          .select('id, order_id, customer, channel, amount, status, created_at')
+          .select('id, order_id, customer, customer_name, channel, amount, total_amount, status, created_at')
           .eq('org_id', orgId)
           .order('created_at', { ascending: false })
           .limit(5)
       ]);
-
       if (ordersResponse.error) throw ordersResponse.error;
       if (channelsResponse.error) throw channelsResponse.error;
       if (conversationsResponse.error) throw conversationsResponse.error;
@@ -76,9 +75,12 @@ const useRealtimeDashboard = () => {
       if (recentOrdersResponse.error) throw recentOrdersResponse.error;
 
       // Secure Revenue & Dynamic Growth Calculation
+      // Secure Revenue & Dynamic Growth Calculation
       const revenueData = revenueResponse.data || [];
-      const calculatedRevenue = revenueData.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-
+      const calculatedRevenue = revenueData.reduce((sum, item) => {
+        const val = item.total_amount !== null && item.total_amount !== undefined ? item.total_amount : item.amount;
+        return sum + (Number(val) || 0);
+      }, 0);
       // Calculate Current Month's Order Growth Dynamically
       const now = new Date();
       const currentMonth = now.getMonth();
@@ -168,7 +170,7 @@ export default function Dashboard() {
           <td className="py-3.5 font-mono text-teal-400 font-medium">{order.order_id || 'N/A'}</td>
           <td className="py-3.5 text-slate-200 font-medium">{order.customer || 'Anonymous'}</td>
           <td className="py-3.5 text-slate-400 capitalize">{order.channel || 'System'}</td>
-          <td className="py-3.5 font-semibold text-white">${Number(order.amount || 0).toLocaleString()}</td>
+          <td className="py-3.5 font-semibold text-white">${Number((order.total_amount !== null && order.total_amount !== undefined ? order.total_amount : order.amount) || 0).toLocaleString()}</td>
           <td className="py-3.5">
             <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium tracking-wide ${
               isCompleted

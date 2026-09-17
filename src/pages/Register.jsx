@@ -181,11 +181,21 @@ export default function Register() {
   // Universal Social Login Handler
   const handleOAuthLogin = async (provider) => {
     try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: provider,
-        options: {
-          redirectTo: `${window.location.origin}/dashboard`,
-        },
+      const options = {
+        redirectTo: `${window.location.origin}/dashboard`,
+      };
+
+      // Force Google to show account selector prompt
+      if (provider === 'google') {
+        options.queryParams = {
+          access_type: 'offline',
+          prompt: 'select_account',
+        };
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options,
       });
 
       if (error) throw error;
