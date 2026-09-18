@@ -10,7 +10,7 @@ const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, ne
 
 // ✅ সঠিকভাবে User ID এবং Workspace ID বের করার জন্য Helper Function
 const getUserId = (req) => req.user?.id || req.user?.userId || req.user?.sub;
-const getWorkspaceId = (req) => req.headers["x-workspace-id"] || req.user?.org_id || getUserId(req);
+const getWorkspaceId = (req) => req.workspaceId || req.user?.org_id || getUserId(req);
 
 // ---- General profile ----
 
