@@ -235,7 +235,7 @@ export const updatePlan = asyncHandler(async (req, res) => {
       });
     }
 
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+    const backendUrl = process.env.BACKEND_URL || "https://api.growcorebot.com";
     const returnUrl = `${backendUrl}/api/v1/shopify/billing/callback?workspace_id=${workspaceId}&plan=${encodeURIComponent(planName)}`;
 
     // Create recurring subscription via Shopify GraphQL API

@@ -8472,7 +8472,7 @@ export default function OrderManagement() {
       try {
         setLoading(true);
         // Direct call to your independent node server endpoint
-        const response = await axios.get("http://localhost:5000/api/v1/orders");
+        const response = await axios.get("https://api.growcorebot.com/api/v1/orders");
         if (response.data && response.data.data) {
           setOrders(response.data.data.orders || []);
         }
@@ -8496,7 +8496,7 @@ export default function OrderManagement() {
   const handleConfirm = async (order) => {
     try {
       // Direct update to your backend database
-      await axios.patch(`http://localhost:5000/api/v1/orders/${order.id}`, { status: "confirmed" });
+      await axios.patch(`https://api.growcorebot.com/api/v1/orders/${order.id}`, { status: "confirmed" });
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "confirmed" } : o));
       toast({ title: `Order ${order.order_id} confirmed on your server` });
     } catch (e) {
@@ -8507,7 +8507,7 @@ export default function OrderManagement() {
   const handleCancel = async (order) => {
     try {
       // Direct update to your backend database
-      await axios.patch(`http://localhost:5000/api/v1/orders/${order.id}`, { status: "cancelled" });
+      await axios.patch(`https://api.growcorebot.com/api/v1/orders/${order.id}`, { status: "cancelled" });
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "cancelled" } : o));
       toast({ title: `Order ${order.order_id} cancelled on your server` });
     } catch (e) {
@@ -8530,7 +8530,7 @@ export default function OrderManagement() {
     try {
       const data = { ...editForm, total_price: parseFloat(editForm.total_price) || 0 };
       // Direct update to your backend database
-      await axios.put(`http://localhost:5000/api/v1/orders/${editOrder.id}`, data);
+      await axios.put(`https://api.growcorebot.com/api/v1/orders/${editOrder.id}`, data);
       setOrders(prev => prev.map(o => o.id === editOrder.id ? { ...o, ...data } : o));
       setEditOrder(null);
       toast({ title: "Order updated directly in your database" });
@@ -10489,7 +10489,7 @@ const channelFilters = [
 ];
 
 // Dynamic API URL for production and local environment
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "https://api.growcorebot.com/api";
 
 export default function UnifiedInbox() {
   const [conversations, setConversations] = useState([]);
@@ -11019,7 +11019,7 @@ import axios from "axios";
  * paste the `settings` object at the bottom into it.
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://api.growcorebot.com/api/v1";
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -11656,7 +11656,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'https://api.growcorebot.com',
         changeOrigin: true,
         secure: false,
       },

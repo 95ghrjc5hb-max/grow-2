@@ -23,7 +23,7 @@ export const beginShopifyAuth = async (req, res) => {
 
     // In beginShopifyAuth:
     const scopes = process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_orders,write_orders';
-    const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    const backendUrl = (process.env.BACKEND_URL || 'https://api.growcorebot.com').replace(/\/$/, '');
     const redirectUri = `${backendUrl}/api/v1/shopify/callback`;
     const clientId = process.env.SHOPIFY_CLIENT_ID || process.env.SHOPIFY_API_KEY;
 
@@ -163,7 +163,7 @@ console.log('[shopifyController] Access Token acquired successfully:', accessTok
 
     // Step F: Register Webhooks for Real-Time Sync
     const webhookTopics = ['products/create', 'products/update', 'products/delete'];
-    const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    const backendUrl = (process.env.BACKEND_URL || 'https://api.growcorebot.com').replace(/\/$/, '');
 
     for (const topic of webhookTopics) {
       try {
@@ -550,7 +550,7 @@ export const createShopifyBillingSubscription = async (req, res) => {
       });
     }
 
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+    const backendUrl = process.env.BACKEND_URL || "https://api.growcorebot.com";
     const returnUrl = `${backendUrl}/api/v1/shopify/billing/callback?workspace_id=${workspaceId}&plan=${targetPlan}`;
 
     const confirmationUrl = await shopifyService.createShopifySubscription(
