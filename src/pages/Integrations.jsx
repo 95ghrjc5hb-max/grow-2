@@ -51,6 +51,8 @@ const platforms = [
     btn: "bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-sm",
   }
 ];
+// Base API URL derived dynamically from environment variables
+const API_BASE_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL;
 
 export default function Integrations() {
   const [channels, setChannels] = useState([]);
@@ -131,7 +133,7 @@ const handleWhatsApp1Click = () => {
 const handleWhatsAppCodeExchange = async (code) => {
   try {
     const { token } = getTokenAndOrgId();
-    const res = await fetch("/api/integrations/whatsapp/oauth", {
+    const res = await fetch(`${API_BASE_URL}/integrations/whatsapp/oauth`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -168,7 +170,7 @@ const handleWhatsAppCodeExchange = async (code) => {
         return;
       }
 
-      const res = await fetch("/api/integrations", {
+      const res = await fetch(`${API_BASE_URL}/integrations`, {
         headers: {
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
@@ -240,7 +242,7 @@ const handleWhatsAppCodeExchange = async (code) => {
   const handleDisconnect = async (platformKey) => {
     try {
       const { token } = getTokenAndOrgId();
-      const res = await fetch(`/api/integrations/${platformKey}`, { 
+      const res = await fetch(`${API_BASE_URL}/integrations/${platformKey}`, {
         method: "DELETE",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -275,7 +277,7 @@ const handleWhatsAppCodeExchange = async (code) => {
     try {
       const { token } = getTokenAndOrgId();
 
-      const res = await fetch("/api/integrations/whatsapp", {
+      const res = await fetch(`${API_BASE_URL}/integrations/whatsapp`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -309,7 +311,7 @@ const handleWhatsAppCodeExchange = async (code) => {
       return;
     }
 
-    window.location.href = `/api/auth/shopify?shop=${cleanDomain}&token=${encodeURIComponent(token)}`;
+    window.location.href = `${API_BASE_URL}/auth/shopify?shop=${cleanDomain}&token=${encodeURIComponent(token)}`;
   };
 
   if (loading) {
