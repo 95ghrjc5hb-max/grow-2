@@ -5,7 +5,7 @@ import axios from "axios";
  * Thin wrapper around axios for talking to the saas-backend API.
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://api.growcorebot.com/api/v1";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
 
 const api = axios.create({
   baseURL: API_BASE_URL,

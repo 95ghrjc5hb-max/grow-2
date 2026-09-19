@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { useToast } from "@/components/ui/use-toast";
 import ChannelIcon from "@/components/shared/ChannelIcon";
 import axios from "axios";
-
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
 export default function OrderManagement() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -48,7 +48,7 @@ export default function OrderManagement() {
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         };
 
-        const response = await axios.get("https://api.growcorebot.com/api/v1/orders", config);
+        const response = await axios.get(`${API_BASE_URL}/orders`, config);
         
         let fetchedData = [];
         if (Array.isArray(response.data)) {
@@ -89,7 +89,7 @@ export default function OrderManagement() {
   const handleConfirm = async (order) => {
     try {
       const { token } = getTokenAndOrgId();
-      await axios.patch(`https://api.growcorebot.com/api/v1/orders/${order.id}`, { status: "confirmed" }, {
+      await axios.patch(`${API_BASE_URL}/orders/${order.id}`, { status: "confirmed" }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "confirmed" } : o));
@@ -102,7 +102,7 @@ export default function OrderManagement() {
   const handleCancel = async (order) => {
     try {
       const { token } = getTokenAndOrgId();
-      await axios.patch(`https://api.growcorebot.com/api/v1/orders/${order.id}`, { status: "cancelled" }, {
+      await axios.patch(`${API_BASE_URL}/orders/${order.id}`, { status: "cancelled" }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: "cancelled" } : o));
@@ -127,7 +127,7 @@ export default function OrderManagement() {
     try {
       const { token } = getTokenAndOrgId();
       const data = { ...editForm, total_amount: parseFloat(editForm.total_amount) || 0 };
-      await axios.put(`https://api.growcorebot.com/api/v1/orders/${editOrder.id}`, data, {
+      await axios.put(`${API_BASE_URL}/orders/${editOrderId}`, data, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       setOrders(prev => prev.map(o => o.id === editOrder.id ? { ...o, ...data } : o));
