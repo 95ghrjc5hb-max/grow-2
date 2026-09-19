@@ -8,11 +8,12 @@ export const verifyWorkspaceAccess = async (req, res, next) => {
     }
 
     // Resolve target workspace identifier
-    const targetWorkspaceId = 
-      req.headers['x-workspace-id'] || 
-      req.params.workspaceId || 
-      req.body.workspaceId || 
-      req.user.org_id;
+    const targetWorkspaceId =
+  req.headers?.['x-workspace-id'] ||
+  req.params?.workspaceId ||
+  req.query?.workspaceId ||
+  req.body?.workspaceId ||
+  req.user?.org_id;
 
     if (!targetWorkspaceId) {
       return res.status(400).json({ success: false, error: 'Workspace context missing.' });
