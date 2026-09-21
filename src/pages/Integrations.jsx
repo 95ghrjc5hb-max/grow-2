@@ -241,8 +241,9 @@ if (!allowedOrigins.includes(event.origin)) return;
       if (popup && popup.closed) {
         clearInterval(timer);
         window.removeEventListener("message", handlePopupMessage);
+        fetchActiveIntegrations();
       }
-    }, 1000);
+    }, 500);
   };
 
   const handleDisconnect = async (platformKey) => {
