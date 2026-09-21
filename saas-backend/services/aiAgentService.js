@@ -125,18 +125,38 @@ export const handleCustomerMessage = async ({
     const cleanMsg = isImageOnly ? '' : rawMsg.replace('[Customer sent an image]', '').trim();
     const currency = botConfig?.currency_symbol || '$';
 
+
+    // 1. Query theke stop-words clean kora (Bangla, Banglish, English)
+    const stopWords = /\b(do|you|have|is|there|any|can|i|get|see|show|me|pictures|picture|photo|photos|image|images|bhai|apnader|kache|ki|ache|dam|price|koto|please)\b/gi;
+    let strippedQuery = cleanMsg.replace(stopWords, '').replace(/[^\w\s]/gi, '').trim();
+
+    // 2. Conversational Memory: query choto hole (jemon "can i have pictures"), ager message theke product context nibe
+    let finalSearchQuery = strippedQuery;
+    if (finalSearchQuery.length < 2 && conversationHistory && conversationHistory.length > 0) {
+      const recentCustomerMsgs = conversationHistory
+        .slice(-3)
+        .map(m => m.message || m.content || '')
+        .join(' ')
+        .replace(stopWords, '')
+        .replace(/[^\w\s]/gi, '')
+        .trim();
+      finalSearchQuery = recentCustomerMsgs;
+    }
+
+    if (!finalSearchQuery) finalSearchQuery = cleanMsg;
+
     let matchedProducts = [];
 
-    // 1. Enterprise Hybrid Search (Gemini Multilingual Vector + Supabase Trigram)
-    if (!isImageOnly && cleanMsg.length >= 2) {
+    // 3. Enterprise Hybrid Search
+    if (!isImageOnly && finalSearchQuery.length >= 2) {
       try {
-        matchedProducts = await searchStoreProducts({ orgId, query: cleanMsg, matchCount: 4 });
+        matchedProducts = await searchStoreProducts({ orgId, query: finalSearchQuery, matchCount: 4 });
       } catch (e) {
         console.error('[aiAgentService] RAG search error:', e);
       }
     }
 
-    // 2. Fallback: If completely unique or greeting query, load just top 4 products
+    // 4. Fallback: If no match, top 4 products
     if (!matchedProducts || matchedProducts.length === 0) {
       const { data: fallbackProducts } = await supabase
         .from('products')
@@ -146,14 +166,15 @@ export const handleCustomerMessage = async ({
       matchedProducts = fallbackProducts || [];
     }
 
-    // 3. Ultra low-token inventory context
+    // 5. Ultra low-token inventory context WITH Image URLs
     let inventoryContext = 'No relevant products found in store inventory.';
     if (matchedProducts && matchedProducts.length > 0) {
       inventoryContext = matchedProducts.map((p, i) => {
         const title = p.name || p.title || 'Item';
         const price = p.price !== undefined && p.price !== null ? p.price : 'N/A';
         const stock = p.stock_status || 'in_stock';
-        return `(${i + 1}). Product: "${title}" | Price: ${currency} ${price} | Stock: ${stock}`;
+        const img = p.image_url ? ` | Image: ${p.image_url}` : '';
+        return `(${i + 1}). Product: "${title}" | Price: ${currency} ${price} | Stock: ${stock}${img}`;
       }).join('\n');
     }
 
