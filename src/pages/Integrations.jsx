@@ -202,7 +202,7 @@ const handleWhatsAppCodeExchange = async (code) => {
       toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
       return;
     }
-
+const appId = import.meta.env.VITE_META_APP_ID || '1457050622922623';
   const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 const redirectUri = isLocal
   ? 'http://localhost:8080/api/auth/meta/callback'
@@ -222,8 +222,12 @@ const redirectUri = isLocal
     const popup = window.open(oauthUrl, "Connect with Meta", "width=600,height=650,status=yes,resizable=yes");
 
     const handlePopupMessage = async (event) => {
-      if (event.origin !== window.location.origin) return;
-      
+      const allowedOrigins = [
+  window.location.origin,
+  'https://api.growcorebot.com',
+  'http://localhost:8080'
+];
+if (!allowedOrigins.includes(event.origin)) return;
       if (event.data?.status === "success") {
         toast({ title: `${platformKey === 'messenger' ? 'Facebook' : 'Instagram'} connected successfully!` });
         fetchActiveIntegrations();
