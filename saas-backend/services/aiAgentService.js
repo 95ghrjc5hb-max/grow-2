@@ -126,31 +126,34 @@ export const handleCustomerMessage = async ({
     const currency = botConfig?.currency_symbol || '$';
 
     let matchedProducts = [];
-    if (!isImageOnly && cleanMsg.length > 2) {
+
+    // 1. Enterprise Hybrid Search (Gemini Multilingual Vector + Supabase Trigram)
+    if (!isImageOnly && cleanMsg.length >= 2) {
       try {
-        const ragResults = await searchStoreProducts({ orgId, query: cleanMsg });
-        if (ragResults?.length > 0) matchedProducts = ragResults.slice(0, 4);
-      } catch (e) { /* silent RAG fallback */ }
+        matchedProducts = await searchStoreProducts({ orgId, query: cleanMsg, matchCount: 4 });
+      } catch (e) {
+        console.error('[aiAgentService] RAG search error:', e);
+      }
     }
 
-    // Fallback: If no RAG match found (or general browsing query), fetch store products directly
+    // 2. Fallback: If completely unique or greeting query, load just top 4 products
     if (!matchedProducts || matchedProducts.length === 0) {
-      const { data: dbProducts } = await supabase
+      const { data: fallbackProducts } = await supabase
         .from('products')
         .select('*')
         .eq('org_id', orgId)
-        .limit(5);
-      matchedProducts = dbProducts || [];
+        .limit(4);
+      matchedProducts = fallbackProducts || [];
     }
 
+    // 3. Ultra low-token inventory context
     let inventoryContext = 'No relevant products found in store inventory.';
     if (matchedProducts && matchedProducts.length > 0) {
       inventoryContext = matchedProducts.map((p, i) => {
-        const title = p.name || p.title || p.product_name || 'Item';
-        const price = p.price ?? 'N/A';
-        const stock = p.stock_status || p.status || 'in_stock';
-        const img = p.image_url || 'N/A';
-        return `(\({i + 1}). Product:\){title} | Price: \({currency}\){price} | Stock: \({stock} | Image URL:\){img}`;
+        const title = p.name || p.title || 'Item';
+        const price = p.price !== undefined && p.price !== null ? p.price : 'N/A';
+        const stock = p.stock_status || 'in_stock';
+        return `(${i + 1}). Product: "${title}" | Price: ${currency} ${price} | Stock: ${stock}`;
       }).join('\n');
     }
 
@@ -212,7 +215,7 @@ ${dynamicBulletTemplate}
 
 2. INVENTORY & STOCK RULES:
    - If an item has Stock: 'out_of_stock', politely inform the customer that it is currently unavailable and suggest in-stock alternatives. DO NOT confirm orders for out-of-stock items.
-
+   - ABSOLUTE PRICING INTEGRITY: You MUST state ONLY the exact numerical price specified in [MATCHED STORE INVENTORY]. NEVER guess or change prices. If a product is not listed, politely state it is unavailable.
 3. MULTI-ITEM & MULTI-QUANTITY HANDLING:
    - Handle single items, multiple quantities, or multiple different products seamlessly.
    - Formula: Subtotal = Sum(Product Unit Price * Quantity).
