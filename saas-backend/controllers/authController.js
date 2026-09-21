@@ -83,18 +83,40 @@ export const handleMetaCallback = async (req, res) => {
     if (error) throw error;
 
     // 5. Close the popup window and notify the React frontend to update the UI
-    const htmlResponse = `
-      <html>
-        <body>
-          <script>
-            window.opener.postMessage({ status: "success" }, "*");
-            window.close();
-          </script>
-        </body>
-      </html>
-    `;
-    return res.status(200).send(htmlResponse);
+   // 5. Allow CSP for inline script, close popup safely and notify React frontend
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src * 'unsafe-inline'; script-src * 'unsafe-inline';"
+    );
 
+    const htmlResponse = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Connected to Meta</title>
+      </head>
+      <body style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;background:#0f172a;color:#fff;font-family:sans-serif;margin:0;">
+        <h2 style="color:#10b981;margin-bottom:8px;">✓ Connected Successfully!</h2>
+        <p style="color:#94a3b8;font-size:14px;margin-bottom:20px;">Closing window automatically...</p>
+        <button onclick="window.close()" style="background:#2563eb;color:#fff;border:none;padding:10px 22px;border-radius:8px;font-weight:600;cursor:pointer;">
+          Close Window
+        </button>
+        <script>
+          try {
+            if (window.opener) {
+              window.opener.postMessage({ status: "success" }, "*");
+            }
+          } catch (e) {}
+          setTimeout(function() {
+            window.close();
+          }, 1000);
+        </script>
+      </body>
+    </html>
+    `;
+
+    return res.status(200).send(htmlResponse);
+    
   } catch (error) {
     console.error('[META CALLBACK ERROR]:', error.message);
     const htmlResponse = `
