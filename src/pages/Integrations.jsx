@@ -203,8 +203,10 @@ const handleWhatsAppCodeExchange = async (code) => {
       return;
     }
 
-    const appId = import.meta.env.VITE_META_APP_ID || "YOUR_META_APP_ID";
-    const redirectUri = `${window.location.origin}/api/auth/meta/callback`;
+  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const redirectUri = isLocal
+  ? 'http://localhost:8080/api/auth/meta/callback'
+  : 'https://api.growcorebot.com/api/auth/meta/callback';
     
     // 🔥 DYNAMIC SCOPE LOGIC (আপনার বলা লজিক অনুযায়ী)
     let scope = "";

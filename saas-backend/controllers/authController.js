@@ -31,7 +31,7 @@ export const handleMetaCallback = async (req, res) => {
     }
 
     // 3. Exchange the short-lived code for a long-lived Access Token from Meta
-    const redirectUri = `${process.env.FRONTEND_URL}/api/auth/meta/callback`;
+   const redirectUri = process.env.META_REDIRECT_URI || 'http://localhost:8080/api/auth/meta/callback';
     const tokenResponse = await fetch(`https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${process.env.META_APP_SECRET}&code=${code}`);
     const tokenData = await tokenResponse.json();
 
