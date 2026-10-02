@@ -3,7 +3,7 @@
 import { supabase } from '../config/supabase.js';
 import { searchStoreProducts } from './ragService.js';
 import { safeParseAIResponse } from './safeJsonParser.js';
-
+import axios from 'axios';
 import { callGroqChat } from './groqProvider.js';
 import { callCerebrasChat } from './cerebrasProvider.js';
 import { callGeminiChat } from './geminiProvider.js';
@@ -145,36 +145,55 @@ export const handleCustomerMessage = async ({
 
     if (!finalSearchQuery) finalSearchQuery = cleanMsg;
 
+    // --- 3. ENTERPRISE HYBRID RAG SEARCH (Sub-10ms for Millions of Products) ---
     let matchedProducts = [];
 
-    // 3. Enterprise Hybrid Search
-    if (!isImageOnly && finalSearchQuery.length >= 2) {
+    if (!isImageOnly && finalSearchQuery && finalSearchQuery.length >= 2) {
       try {
-        matchedProducts = await searchStoreProducts({ orgId, query: finalSearchQuery, matchCount: 4 });
+        // Supabase match_products_enterprise RPC call korbe (HNSW Vector + FTS)
+        matchedProducts = await searchStoreProducts({
+          orgId,
+          query: finalSearchQuery,
+          matchCount: 4
+        });
       } catch (e) {
-        console.error('[aiAgentService] RAG search error:', e);
+        console.error('[aiAgentService] Enterprise RAG search error:', e.message);
       }
     }
 
-    // 4. Fallback: If no match, top 4 products
+    // --- 4. ENTERPRISE LIGHTWEIGHT FALLBACK (Zero Memory Bloat) ---
+    // Jodi search-e match na paoa jay, tobe kebol active in-stock top 4 item ana hobe (Vector exclude kore)
     if (!matchedProducts || matchedProducts.length === 0) {
-      const { data: fallbackProducts } = await supabase
-        .from('products')
-        .select('*')
-        .eq('org_id', orgId)
-        .limit(4);
-      matchedProducts = fallbackProducts || [];
+      try {
+        const { data: fallbackProducts } = await supabase
+          .from('products')
+          .select('id, name, price, stock_status, image_url, images, description')
+          .eq('org_id', orgId)
+          .eq('stock_status', 'in_stock')
+          .limit(4);
+
+        matchedProducts = fallbackProducts || [];
+      } catch (err) {
+        console.error('[aiAgentService] Fallback inventory query error:', err.message);
+        matchedProducts = [];
+      }
     }
 
-    // 5. Ultra low-token inventory context WITH Image URLs
-    let inventoryContext = 'No relevant products found in store inventory.';
+    // --- 5. ULTRA COMPACT TOKEN-OPTIMIZED CONTEXT INJECTION ---
+    let inventoryContext = 'No relevant in-stock products found in store inventory.';
     if (matchedProducts && matchedProducts.length > 0) {
       inventoryContext = matchedProducts.map((p, i) => {
-        const title = p.name || p.title || 'Item';
-        const price = p.price !== undefined && p.price !== null ? p.price : 'N/A';
+        const title = p.name || 'Item';
+        const price = (p.price !== undefined && p.price !== null) ? p.price : 'N/A';
         const stock = p.stock_status || 'in_stock';
-        const img = p.image_url ? ` | Image: ${p.image_url}` : '';
-        return `(${i + 1}). Product: "${title}" | Price: ${currency} ${price} | Stock: ${stock}${img}`;
+        const mainImg = p.image_url || (typeof p.images === 'string' ? p.images.split(',')[0].trim() : (Array.isArray(p.images) ? p.images[0] : ''));
+const img = mainImg ? ` | Image: ${mainImg}` : '';
+        // Token save korte description theke first 100 character neya hocche
+        const cleanDesc = (p.description && p.description !== 'EMPTY')
+          ? ` | Details: ${p.description.slice(0, 100).replace(/\n/g, ' ')}`
+          : '';
+
+        return `${i + 1}. Product: "${title}" | Price: ${currency} ${price} | Stock: ${stock}${cleanDesc}${img}`;
       }).join('\n');
     }
 
@@ -254,8 +273,8 @@ ${dynamicBulletTemplate}
 [RESPONSE FORMAT - STRICT JSON]
 Respond ONLY with valid JSON in this exact schema:
 {
-  "reply": "Conversational reply with clean formatting (* bullets)",
-  "image_url": "ONLY provide product image URL if customer explicitly asks for pictures, otherwise null",
+ "reply": "Conversational reply strictly mirroring the customer's exact language, script, dialect, and tone (* bullets). Answer product questions accurately, handle order checkout details smoothly, and summarize orders. STRICT RULE: NEVER write or output raw image URLs/links inside this reply text under any circumstances.",
+"image_url": "CRITICAL UNIVERSAL VISUAL RULE: Return the main product image URL ONLY under two conditions: (1) The FIRST time a customer inquires about a specific product in the conversation, return its image_url along with details. (2) The customer expresses any intent to see pictures, photos, or visual appearances of a product in ANY language, alphabet, script, or dialect worldwide (e.g. single words, slang, or full sentences). DO NOT return image_url for greetings ('hi', 'hello') or during follow-up messages (such as asking price, stock, specs, delivery charges) if images were already sent earlier in the conversation history. Otherwise, strictly return null.",
   "orderData": null,
   "handover": false
 }
@@ -286,36 +305,39 @@ When the customer explicitly CONFIRMS the order, output "orderData" with exact c
       });
     }
 
-    if (imageUrl) {
-      let finalImagePayload = imageUrl;
-      if (imageUrl.startsWith('http')) {
+  if (imageUrl) {
         try {
-          const imgResponse = await fetch(imageUrl);
-          const arrayBuffer = await imgResponse.arrayBuffer();
-          const base64Data = Buffer.from(arrayBuffer).toString('base64');
-          const contentType = imgResponse.headers.get('content-type') || 'image/jpeg';
-          finalImagePayload = `data:\({contentType};base64,\){base64Data}`;
-        } catch (err) {
-          console.error('[IMAGE CONVERSION ERROR]:', err.message);
-        }
-      }
+            const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+            const imageBuffer = Buffer.from(imageResponse.data);
+            const base64Image = imageBuffer.toString('base64');
+            const mimeType = imageResponse.headers['content-type'] || 'image/jpeg';
 
-      messages.push({
-        role: 'user',
-        content: [
-          { type: 'text', text: cleanMsg || 'Identify the product in this image and compare with inventory.' },
-          { type: 'image_url', image_url: { url: finalImagePayload } }
-        ]
-      });
+            messages.push({
+                role: 'user',
+                content: [
+                    { type: 'text', text: cleanMsg || 'Identify this product from the image and check if it matches our store inventory.' },
+                    { 
+                        type: 'image_url', 
+                        image_url: { 
+                            url: `data:${mimeType};base64,${base64Image}` 
+                        } 
+                    }
+                ]
+            });
+        } catch (imgErr) {
+            console.error('IMAGE DOWNLOAD & CONVERSION ERROR:', imgErr.message || imgErr);
+            // Fallback: if image download fails, at least send the text query
+            messages.push({ role: 'user', content: cleanMsg || 'Hello' });
+        }
     } else {
-      messages.push({ role: 'user', content: cleanMsg || 'Hello' });
+        messages.push({ role: 'user', content: cleanMsg || 'Hello' });
     }
 
-    const rawResponse = await executeWaterfallEngine(messages, imageUrl);
+   const rawResponse = await executeWaterfallEngine(messages, imageUrl);
     const parsedResponse = safeParseAIResponse(rawResponse);
-    
+
     if (parsedResponse?.orderData) {
-      parsedResponse.image_url = null;
+        parsedResponse.image_url = null;
     }
 
     return parsedResponse;

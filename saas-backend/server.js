@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import productRoutes from './routes/productRoutes.js';
 import express from 'express';
 // mongoose import removed as the system is fully migrated to Supabase
 import cors from 'cors';
@@ -420,7 +421,7 @@ app.use('/api/integrations', integrationRoutes);
 
 app.use('/api/v1/webhooks', webhookRoutes);
 
-
+app.use('/api/v1/products', productRoutes);
 // Serve static assets if in production
 app.use(express.static(path.join(__dirname, '../dist')));
 

@@ -195,46 +195,62 @@ const handleWhatsAppCodeExchange = async (code) => {
     return channels.find((c) => c.platform === platform);
   };
 
-  // 🔗 LOGIC: Secure Meta OAuth Flow with Dynamic Scopes
+ // LOGIC: Secure Meta OAuth Flow with Dynamic Scopes
   const handleMetaOAuth = (platformKey) => {
     const { token } = getTokenAndOrgId();
     if (!token) {
       toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
       return;
     }
-const appId = import.meta.env.VITE_META_APP_ID || '1457050622922623';
-  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const redirectUri = isLocal
-  ? 'http://localhost:8080/api/auth/meta/callback'
-  : 'https://api.growcorebot.com/api/auth/meta/callback';
-    
-    // 🔥 DYNAMIC SCOPE LOGIC (আপনার বলা লজিক অনুযায়ী)
-    let scope = "";
+
+    // 1. Dynamic Environment Detection
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+    // 2. Dynamic App ID: Local-e 'grow local dev', Online-e 'ai grow'
+    const appId = isLocal 
+      ? (import.meta.env.VITE_META_APP_ID || '1334514158579851')
+      : (import.meta.env.VITE_META_APP_ID || '1487050622822623');
+
+    // 3. Dynamic HTTPS Redirect URI
+    const redirectUri = isLocal
+      ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/meta/callback'
+      : 'https://api.growcorebot.com/api/auth/meta/callback';
+
+    // 4. Dynamic Scope Logic
+    let scope = '';
     if (platformKey === "messenger") {
-      scope = "pages_show_list,pages_messaging"; 
+      scope = 'pages_show_list,pages_messaging,pages_read_engagement';
     } else if (platformKey === "instagram") {
-      scope = "pages_show_list,instagram_basic,instagram_manage_messages,pages_read_engagement";
+      scope = 'pages_show_list,instagram_basic,instagram_manage_messages,pages_read_engagement';
     }
-    
-    const customState = encodeURIComponent(`${platformKey}___${token}`);
-  const oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${customState}&config_id=1389130196651056&response_type=code`;
-    
-    const popup = window.open(oauthUrl, "Connect with Meta", "width=600,height=650,status=yes,resizable=yes");
+
+    // 3-ti underscore (___) ebong auth_type=rerequest jog kora holo
+    const customState = encodeURIComponent(platformKey + "___" + token);
+    const oauthUrl = "https://www.facebook.com/v20.0/dialog/oauth?client_id=" + appId 
+      + "&redirect_uri=" + encodeURIComponent(redirectUri) 
+      + "&scope=" + scope 
+      + "&state=" + customState 
+      + "&response_type=code"
+      + "&auth_type=rerequest";
+    const popup = window.open(oauthUrl, "ConnectMeta", "width=600,height=650,status=yes,resizable=yes");
 
     const handlePopupMessage = async (event) => {
       const allowedOrigins = [
-  window.location.origin,
-  'https://api.growcorebot.com',
-  'http://localhost:8080'
-];
-if (!allowedOrigins.includes(event.origin)) return;
+        'https://api.growcorebot.com',
+        'https://unloving-unnamed-flight.ngrok-free.dev',
+        'http://localhost:5000',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173'
+      ];
+      if (!allowedOrigins.includes(event.origin)) return;
+
       if (event.data?.status === "success") {
         toast({ title: `${platformKey === 'messenger' ? 'Facebook' : 'Instagram'} connected successfully!` });
         fetchActiveIntegrations();
         window.removeEventListener("message", handlePopupMessage);
       }
     };
-    
+
     window.addEventListener("message", handlePopupMessage);
 
     const timer = setInterval(() => {
@@ -245,6 +261,7 @@ if (!allowedOrigins.includes(event.origin)) return;
       }
     }, 500);
   };
+   
 
   const handleDisconnect = async (platformKey) => {
     try {
@@ -317,7 +334,6 @@ if (!allowedOrigins.includes(event.origin)) return;
       toast({ title: "Authentication error", variant: "destructive" });
       return;
     }
-
     window.location.href = `${API_BASE_URL}/auth/shopify?shop=${cleanDomain}&token=${encodeURIComponent(token)}`;
   };
 

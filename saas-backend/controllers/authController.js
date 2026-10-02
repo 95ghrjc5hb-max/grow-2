@@ -24,7 +24,20 @@ export const handleMetaCallback = async (req, res) => {
 
     // Parse the payload (middle part of the JWT)
     const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
-    const orgId = payload.sub; // This is the unique user/org ID in Supabase
+    const userId = payload.sub;
+
+// profiles টেবিল থেকে ইউজারের আসল org_id বের করা
+const { data: userProfile, error: profileErr } = await supabase
+  .from('profiles')
+  .select('org_id')
+  .eq('id', userId)
+  .single();
+
+if (profileErr || !userProfile?.org_id) {
+  throw new Error('User organization not found. Please re-login.');
+}
+
+const orgId = userProfile.org_id;
 
     if (!orgId) {
       throw new Error('User ID could not be extracted from the token');
@@ -43,14 +56,37 @@ export const handleMetaCallback = async (req, res) => {
       throw new Error('Failed to retrieve access token from Meta Graph API');
     }
 
-    // 🔥 NEW ADDITION:
-    const pageResponse = await fetch(`https://graph.facebook.com/v20.0/me/accounts?fields=id,name,access_token&access_token=${tokenData.access_token}`);
-    const pageData = await pageResponse.json();
-    
-    if (!pageData.data || pageData.data.length === 0) {
+   // 1. Check exact permissions granted by Meta
+    const permsRes = await fetch(`https://graph.facebook.com/v20.0/me/permissions?access_token=${tokenData.access_token}`);
+    const permsData = await permsRes.json();
+    console.log("ACTUAL PERMISSIONS GRANTED:", JSON.stringify(permsData.data));
+
+    // 2. Fetch Pages with tasks and fallback
+    let pageResponse = await fetch(`https://graph.facebook.com/v20.0/me/accounts?fields=id,name,access_token,tasks&access_token=${tokenData.access_token}`);
+    let pageData = await pageResponse.json();
+
+    console.log("META PAGE DATA RESPONSE:", JSON.stringify(pageData));
+
+    if (pageData.error) {
+      throw new Error(pageData.error.message);
+    }
+
+   // DIRECT PAGE DEBUG CALL
+    console.log("Checking direct page access for 112533424784697...");
+    const directRes = await fetch(`https://graph.facebook.com/v20.0/112533424784697?fields=id,name,access_token&access_token=${tokenData.access_token}`);
+    const directData = await directRes.json();
+    console.log("DIRECT PAGE API RESPONSE:", JSON.stringify(directData));
+
+    if (directData.error) {
+      console.error("META GRAPH ERROR:", directData.error);
+      throw new Error("Meta Error: " + directData.error.message);
+    }
+
+    if (directData.id) {
+      pageData = { data: [directData] };
+    } else {
       throw new Error('No Facebook Page found connected to this account.');
     }
-    
     const connectedPage = pageData.data[0]; 
     // Auto-subscribe the page to webhooks via Meta Graph API
     try {

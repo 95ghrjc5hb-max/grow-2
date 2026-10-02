@@ -53,6 +53,7 @@ export default function BillingUsageSection() {
             if (usageRes?.data) {
                 const billingInfo = usageRes.data.data || usageRes.data;
                 
+console.log("🔥 REAL BILLING INFO FROM BACKEND:", billingInfo); 
                 const metaPlan = billingInfo.meta_plan || billingInfo.metaPlan || 'Grow Free';
                 const shopifyPlan = billingInfo.shopify_plan || billingInfo.shopifyPlan || 'Grow Free';
 

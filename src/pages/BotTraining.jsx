@@ -37,48 +37,59 @@ export default function BotTraining() {
     currency_symbol: '$',
   });
 
-  // 1. Fetch Products & Bot Config from Supabase on load
-   // 1. Fetch Products & Bot Config from Supabase on load
-  useEffect(() => {
-    async function fetchData() {
-      try {
-        setLoading(true);
+  // 1. Define fetchData OUTSIDE so the whole file can use it
+  const fetchData = async () => {
+    try {
+      setLoading(true);
 
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          setProducts([]);
-          setLoading(false);
-          return;
-        }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setProducts([]);
+        setLoading(false);
+        return;
+      }
 
-        // Fetch Organization ID
-        const { data: memberData } = await supabase
-          .from("organization_members")
-          .select("org_id")
-          .eq("user_id", user.id);
+      // Fetch Organization ID - ALWAYS prioritize active org from profiles first!
+      let currentOrgId = null;
+      
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("org_id")
+        .eq("id", user.id)
+        .single();
+        
+      if (profile && profile.org_id) {
+          currentOrgId = profile.org_id; // Primary source of truth
+      } else {
+          // Fallback if profile doesn't have an active org
+          const { data: memberData } = await supabase
+            .from("organization_members")
+            .select("org_id")
+            .eq("user_id", user.id);
+          currentOrgId = memberData && memberData.length > 0 ? memberData[0].org_id : null;
+      }
+      
+      setUserOrgId(currentOrgId);
 
-        const currentOrgId = memberData && memberData.length > 0 ? memberData[0].org_id : null;
-        setUserOrgId(currentOrgId);
+      // BULLETPROOF FETCH LOGIC: Fetch by org_id OR user_id
+      let query = supabase.from("products").select("*");
+      if (currentOrgId) {
+        query = query.or(`org_id.eq.${currentOrgId},user_id.eq.${user.id}`);
+      } else {
+        query = query.eq("user_id", user.id);
+      }
 
-        // BULLETPROOF FETCH LOGIC: Fetch by org_id OR user_id
-        let query = supabase.from("products").select("*");
-        if (currentOrgId) {
-          query = query.or(`org_id.eq.${currentOrgId},user_id.eq.${user.id}`);
-        } else {
-          query = query.eq("user_id", user.id);
-        }
+      const { data: supaProds, error: prodError } = await query;
 
-        const { data: supaProds, error: prodError } = await query;
+      if (prodError) {
+        console.error("Supabase Fetch Error:", prodError);
+      } else {
+        console.log("Successfully fetched products:", supaProds);
+      }
 
-        if (prodError) {
-          console.error("Supabase Fetch Error:", prodError);
-        } else {
-          console.log("Successfully fetched products:", supaProds);
-        }
+      setProducts(supaProds || []);
 
-        setProducts(supaProds || []);
-
-        // Fetch Bot Config
+      // Fetch Bot Config
       const { data: configs } = await supabase.from("bot_configs").select("*").limit(1);
       if (configs && configs.length > 0) {
         setBotConfig(configs[0]);
@@ -90,13 +101,16 @@ export default function BotTraining() {
           currency_symbol: configs[0].currency_symbol || '$',
         });
       }
-      } catch (error) {
-        console.error("BotTraining fetch error:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
 
+    } catch (error) {
+      console.error("BotTraining fetch error:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 2. Call fetchData when the page loads
+  useEffect(() => {
     fetchData();
   }, []);
 const resetForm = () => {
@@ -109,7 +123,7 @@ const resetForm = () => {
     });
     setEditingProduct(null);
   };
-    const handleSaveProduct = async () => {
+const handleSaveProduct = async () => {
     if (!form.name || !form.price) {
       toast({ title: "Name and Price are required", variant: "destructive" });
       return;
@@ -122,62 +136,97 @@ const resetForm = () => {
         return;
       }
 
+      // 1. Resolve canonical org_id from profiles (fallback to organization_members)
       let activeOrgId = userOrgId;
       if (!activeOrgId) {
-        const { data: memberData } = await supabase
-          .from("organization_members")
-          .select("org_id")
-          .eq("user_id", user.id);
-        if (memberData && memberData.length > 0) {
-          activeOrgId = memberData[0].org_id;
-          setUserOrgId(activeOrgId);
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('org_id')
+          .eq('id', user.id)
+          .single();
+
+        if (profile?.org_id) {
+          activeOrgId = profile.org_id;
+        } else {
+          const { data: memberData } = await supabase
+            .from('organization_members')
+            .select('org_id')
+            .eq('user_id', user.id);
+
+          if (memberData && memberData.length > 0) {
+            activeOrgId = memberData[0].org_id;
+          }
         }
+        setUserOrgId(activeOrgId);
       }
 
-      // PAYLOAD WITH BOTH ORG_ID AND USER_ID
+      if (!activeOrgId) {
+        toast({ title: "Tenant organization not found", variant: "destructive" });
+        return;
+      }
+
       const payload = {
-        name: form.name,
+        name: form.name.trim(),
         price: parseFloat(form.price) || 0,
-        description: form.description || "",
-        stock_status: form.stock_status || "in_stock",
-        image_url: form.image_url || "",
+        description: form.description || '',
+        stock_status: form.stock_status || 'in_stock',
+        image_url: form.image_url || '',
         org_id: activeOrgId,
-        user_id: user.id // <-- This ensures it never gets lost!
+        user_id: user.id
       };
 
-      if (editingProduct) {
-        const { data, error } = await supabase
-          .from("products")
-          .update(payload)
-          .eq("id", editingProduct.id)
-          .select();
+// 1. Get current user's Auth Token dynamically
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
 
-        if (error) throw error;
-        setProducts((prev) => prev.map((p) => (p.id === editingProduct.id ? data[0] : p)));
-        toast({ title: "Product updated successfully!" });
-      } else {
-        const { data, error } = await supabase
-          .from("products")
-          .insert([payload])
-          .select();
+    if (editingProduct) {
+      // 2. Edit request with Auth Token
+      const response = await fetch(`/api/v1/products/${editingProduct.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
 
-        if (error) throw error;
-        setProducts((prev) => [...prev, data[0]]);
-        toast({ title: "Product added to Supabase!" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Failed to update product');
+
+      setProducts((prev) => prev.map((p) => (p.id === editingProduct.id ? result.data : p)));
+      toast({ title: "Product updated & Re-embedded successfully!" });
+    } else {
+      // 3. Create request with Auth Token
+      const response = await fetch('/api/v1/products', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Failed to create product via backend');
+
+      if (result.data) {
+        setProducts((prev) => [...prev, result.data]);
       }
+      toast({ title: "Product added & Auto-Embedding triggered!" });
+    }
 
       setShowModal(false);
       resetForm();
+      fetchData(); // Refresh list to keep UI synchronized
     } catch (error) {
       console.error("Error saving product:", error);
       toast({
         title: "Failed to save product",
         description: error.message || "Database error",
-        variant: "destructive",
+        variant: "destructive"
       });
     }
   };
-
 
     const handleDelete = async (id) => {
     try {

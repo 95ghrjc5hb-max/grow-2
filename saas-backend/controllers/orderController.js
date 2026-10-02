@@ -1,129 +1,134 @@
-import supabase from '../config/supabase.js';
+import { supabase } from '../config/supabase.js';
 
-// Get all orders belonging ONLY to the logged-in user
+// Enterprise Helper: Resolves Org ID safely from DB (Profiles & Members)
+const resolveUserOrgId = async (userId) => {
+  if (!userId || userId === 'undefined') return null;
+
+  try {
+    // 1. Check organization_members table first
+    const { data: member } = await supabase
+      .from('organization_members')
+      .select('org_id')
+      .eq('user_id', userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (member?.org_id) return member.org_id;
+
+    // 2. Check profiles table (Supabase public table name)
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('org_id')
+      .eq('id', userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (profile?.org_id) return profile.org_id;
+
+    // 3. Fallback: Check if user owns an active integration
+    const { data: integration } = await supabase
+      .from('integrations')
+      .select('org_id')
+      .eq('user_id', userId)
+      .limit(1)
+      .maybeSingle();
+
+    return integration?.org_id || null;
+  } catch (err) {
+    console.error('[ORG RESOLUTION WARNING]:', err.message);
+    return null;
+  }
+};
+
+// 1. Get all orders belonging to the organization
 export const getOrders = async (req, res) => {
   try {
-    // 1. Safe extraction of userId (Token payload fallback added)
-    const userId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.user_id;
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
 
-    // 2. ⚠️ Safety Check: userId না থাকলে ডাটাবেজে রিকোয়েস্ট না পাঠিয়ে এখানেই আটকে দেওয়া
     if (!userId || userId === 'undefined') {
-      return res.status(200).json({
-        success: true,
-        data: [],
-        message: "User not authenticated or ID missing"
-      });
+      return res.status(200).json({ success: true, data: [] });
     }
 
-    // 3. Query Supabase Database
-    // 🔥 FIXED: Changed 'user_id' to 'org_id' to match your Database schema exactly
-    const { data: orders, error } = await supabase
+    // Resolve tenant org_id dynamically
+    const orgId = req.headers['x-org-id'] || await resolveUserOrgId(userId);
+
+    let query = supabase
       .from('orders')
       .select('*')
-      .eq('org_id', userId)
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
+    // Filter strictly by org_id if resolved
+    if (orgId) {
+      query = query.eq('org_id', orgId);
+    }
 
+    const { data: orders, error } = await query;
+    if (error) throw error;
+console.log('👉 SUPABASE FOUND ORDERS:', orders?.length, orders);
     return res.status(200).json({
       success: true,
       data: orders || []
     });
   } catch (error) {
     console.error('[ORDER FETCH ERROR]:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// Update order status
+// 2. Update order status
 export const updateOrderStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-    const userId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.user_id;
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
 
-    if (!userId || userId === 'undefined') {
-      return res.status(401).json({
-        success: false,
-        error: "Unauthorized user action"
-      });
+    const orgId = req.headers['x-org-id'] || await resolveUserOrgId(userId);
+
+    let query = supabase
+      .from('orders')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', id);
+
+    if (orgId) {
+      query = query.eq('org_id', orgId);
     }
 
-    // 🔥 FIXED: Changed 'user_id' to 'org_id' for strict multi-tenant isolation
-    const { data, error } = await supabase
-      .from('orders')
-      .update({ status })
-      .eq('id', id)
-      .eq('org_id', userId)
-      .select();
-
+    const { data, error } = await query.select();
     if (error) throw error;
 
-    return res.status(200).json({
-      success: true,
-      data: data?.[0] || null
-    });
+    return res.status(200).json({ success: true, data: data?.[0] || null });
   } catch (error) {
-    console.error('[ORDER UPDATE ERROR]:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('[ORDER STATUS UPDATE ERROR]:', error.message);
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
-// 3. Edit Full Order Details (Save Changes)
+
+// 3. Edit Full Order Details
 export const updateOrder = async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      customer_name,
-      customer_phone,
-      address,
-      products,
-      total_amount,
-      status
-    } = req.body;
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+    const orgId = req.headers['x-org-id'] || await resolveUserOrgId(userId);
 
-    const userId = req.user?.id || req.user?.userId || req.user?._sub || req.user?.user_id;
+    const updatePayload = { ...req.body, updated_at: new Date().toISOString() };
+    delete updatePayload.id;
+    delete updatePayload.org_id;
 
-    if (!userId || userId === 'undefined') {
-      return res.status(401).json({
-        success: false,
-        error: "Unauthorized user action"
-      });
-    }
-
-    const updatePayload = {
-      ...(customer_name !== undefined && { customer_name }),
-      ...(customer_phone !== undefined && { customer_phone }),
-      ...(address !== undefined && { address }),
-      ...(products !== undefined && { products }),
-      ...(total_amount !== undefined && { total_amount: Number(total_amount) || 0 }),
-      ...(status !== undefined && { status }),
-      updated_at: new Date().toISOString()
-    };
-
-    const { data, error } = await supabase
+    let query = supabase
       .from('orders')
       .update(updatePayload)
-      .eq('id', id)
-      .eq('org_id', userId)
-      .select();
+      .eq('id', id);
 
+    if (orgId) {
+      query = query.eq('org_id', orgId);
+    }
+
+    const { data, error } = await query.select();
     if (error) throw error;
 
-    return res.status(200).json({
-      success: true,
-      data: data?.[0] || null
-    });
+    return res.status(200).json({ success: true, data: data?.[0] || null });
   } catch (error) {
     console.error('[ORDER UPDATE ERROR]:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };

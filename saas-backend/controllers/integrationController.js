@@ -2,14 +2,38 @@ import axios from 'axios';
 import { supabase } from '../config/supabase.js';
 
 const GRAPH_API_URL = 'https://graph.facebook.com/v18.0';
+// Helper function to safely fetch the real org_id
+const getRealOrgId = async (userId) => {
+  let { data: profile } = await supabase
+    .from('profiles')
+    .select('org_id')
+    .eq('id', userId)
+    .maybeSingle();
 
-// 1. Get all integrations for logged in organization/workspace
+  if (profile?.org_id) return profile.org_id;
+
+  const { data: member } = await supabase
+    .from('organization_members')
+    .select('org_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  return member?.org_id || userId;
+};
 export const getIntegrations = async (req, res) => {
   try {
-    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
-    if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
+    const orgId = req.orgId || req.user?.org_id;
 
-    const { data, error } = await supabase
+    if (!orgId) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        integrations: []
+      });
+    }
+
+    // Fetch all integrations strictly by org_id
+    const { data: integrations, error } = await supabase
       .from('integrations')
       .select('*')
       .eq('org_id', orgId);
@@ -18,14 +42,15 @@ export const getIntegrations = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: data || []
+      data: integrations || [],
+      integrations: integrations || []
     });
+
   } catch (error) {
     console.error('[GET INTEGRATIONS ERROR]:', error.message);
     return res.status(500).json({
       success: false,
-      error: error.message,
-      data: []
+      error: error.message
     });
   }
 };
@@ -33,9 +58,10 @@ export const getIntegrations = async (req, res) => {
 // 2. 1-Click WhatsApp Embedded Signup OAuth Callback
 export const connectWhatsAppOAuth = async (req, res) => {
   try {
-    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
-    if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
-
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+    if (!userId) return res.status(401).json({ success: false, error: "Unauthorized: User ID missing" });
+    
+    const orgId = await getRealOrgId(userId);
     const { code } = req.body;
     if (!code) return res.status(400).json({ success: false, error: 'Missing token or code from Meta.' });
 
@@ -128,9 +154,10 @@ export const connectWhatsAppOAuth = async (req, res) => {
 // 3. Connect WhatsApp integration (Manual fallback)
 export const connectWhatsApp = async (req, res) => {
   try {
-    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
-    if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
-    const { phoneNumber, apiKey } = req.body;
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+    if (!userId) return res.status(401).json({ success: false, error: "Unauthorized: User ID missing" });
+    
+    const orgId = await getRealOrgId(userId);
 
     const { data, error } = await supabase
       .from('integrations')
@@ -159,19 +186,31 @@ export const connectWhatsApp = async (req, res) => {
 export const disconnectIntegration = async (req, res) => {
   try {
     const { platform } = req.params;
-    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
-    if (!orgId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
 
+    if (!userId) {
+        return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
+    }
     if (!platform) {
-      return res.status(400).json({ error: 'Platform name is required' });
+        return res.status(400).json({ error: 'Platform name is required' });
+    }
+
+    // Fetch the CORRECT org_id from profiles based on user ID
+    const { data: profile, error: profileErr } = await supabase
+      .from('profiles')
+      .select('org_id')
+      .eq('id', userId)
+      .single();
+
+    if (profileErr || !profile?.org_id) {
+        return res.status(404).json({ success: false, error: 'Organization not found for user' });
     }
 
     const { error } = await supabase
       .from('integrations')
       .delete()
-      .eq('org_id', orgId)
+      .eq('org_id', profile.org_id)
       .eq('platform', platform);
-
     if (error) throw error;
 
     return res.status(200).json({

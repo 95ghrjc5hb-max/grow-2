@@ -1,5 +1,4 @@
-import dotenv from 'dotenv';
-dotenv.config();
+import 'dotenv/config';
 
 import { supabase } from '../config/supabase.js';
 import { generateEmbedding, buildProductEmbeddingText } from '../services/ragService.js';

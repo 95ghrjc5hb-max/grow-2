@@ -189,9 +189,46 @@ export const getWebhookLogs = asyncHandler(async (req, res) => {
 // --- Billing & Usage ---
 
 export const getBillingUsage = asyncHandler(async (req, res) => {
-  const data = await settingsService.getBillingUsage(getWorkspaceId(req));
+  const userId = getUserId(req);
+
+  // 1. Fetch org_id safely from profiles OR organization_members table
+    let { data: profile } = await supabase
+      .from('profiles')
+      .select('org_id, workspace_id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    // Fallback: If profiles returns null, check organization_members
+    let realOrgId = profile?.org_id;
+    if (!realOrgId) {
+      const { data: member } = await supabase
+        .from('organization_members')
+        .select('org_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      
+      realOrgId = member?.org_id;
+    }
+
+    // Final safety fallback
+    if (!realOrgId) {
+      realOrgId = getWorkspaceId(req);
+    }
+
+  // Pick the real tenant UUID (fallback safely)
+
+  console.log("[DEBUG Billing Controller] Authenticated User:", userId);
+  console.log("[DEBUG Billing Controller] Profile Found:", profile);
+  console.log("[DEBUG Billing Controller] Target Org ID:", realOrgId);
+
+  // 2. Fetch billing usage data for the verified tenant
+  const data = await settingsService.getBillingUsage(realOrgId);
+
+  // 3. Disable caching so browser 304 stops blocking fresh values
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
   res.json({ success: true, data });
 });
+
 
 export const getInvoices = asyncHandler(async (req, res) => {
   const data = await settingsService.getInvoices(getWorkspaceId(req));

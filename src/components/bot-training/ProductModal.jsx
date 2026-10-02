@@ -1,5 +1,6 @@
-import React from "react";
-import { Save } from "lucide-react";
+import React, { useState } from "react";
+import { Save, Loader2, ImagePlus } from "lucide-react";
+import { supabase } from "@/supabaseClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -7,6 +8,28 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function ProductModal({ open, onOpenChange, editingProduct, form, setForm, onSave }) {
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleImageUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    setIsUploading(true);
+    const uploadedUrls = [];
+    
+    for (const file of files) {
+      const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '_')}`;
+      const { error } = await supabase.storage.from('product-images').upload(fileName, file);
+      if (!error) {
+        const { data } = supabase.storage.from('product-images').getPublicUrl(fileName);
+        uploadedUrls.push(data.publicUrl);
+      }
+    }
+    
+    const currentUrls = form.image_url ? form.image_url.split(',').filter(Boolean) : [];
+    setForm({ ...form, image_url: [...currentUrls, ...uploadedUrls].join(',') });
+    setIsUploading(false);
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="bg-card border-border max-w-lg">
@@ -59,25 +82,28 @@ export default function ProductModal({ open, onOpenChange, editingProduct, form,
               className="bg-white/5 border-white/10 min-h-[80px]"
             />
           </div>
-          <div>
-            <label className="text-xs text-slate-500 mb-1.5 block">Image URL</label>
-            <Input
-              value={form.image_url}
-              onChange={(e) => setForm({ ...form, image_url: e.target.value })}
-              placeholder="https://..."
-              className="bg-white/5 border-white/10"
-            />
-          </div>
-          <div className="flex justify-end gap-3 pt-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)} className="border-white/10 text-slate-300">
-              Cancel
-            </Button>
-            <Button onClick={onSave} className="bg-teal-500 hover:bg-teal-600 text-black gap-2">
-              <Save className="w-4 h-4" /> {editingProduct ? "Update" : "Add Product"}
-            </Button>
-          </div>
+           <div>
+          <label className="text-xs text-slate-500 mb-1.5 block">Product Images (Gallery)</label>
+          <Input
+            type="file" multiple accept="image/*"
+            onChange={handleImageUpload} disabled={isUploading}
+            className="bg-white/5 border-white/10 text-slate-300 file:bg-teal-600 file:text-white file:border-0 file:rounded file:px-3 file:py-1 file:mr-4 file:cursor-pointer cursor-pointer"
+          />
+          {isUploading && <p className="text-xs text-teal-400 mt-2 flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Uploading...</p>}
+          {form.image_url && <p className="text-xs text-slate-400 mt-2 flex items-center gap-1"><ImagePlus className="w-3 h-3" /> {form.image_url.split(',').length} image(s) added.</p>}
+        </div>
+
+        <div className="flex justify-end gap-3 pt-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)} className="border-white/10 text-slate-300">
+            Cancel
+          </Button>
+          <Button onClick={onSave} disabled={isUploading} className="bg-teal-500 hover:bg-teal-600 text-black gap-2">
+            <Save className="w-4 h-4" /> {isUploading ? "Uploading..." : (editingProduct ? "Update" : "Add Product")}
+          </Button>
+        </div>
         </div>
       </DialogContent>
     </Dialog>
   );
 }
+

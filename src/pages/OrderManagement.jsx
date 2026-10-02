@@ -49,24 +49,18 @@ export default function OrderManagement() {
         };
 
         const response = await axios.get(`${API_BASE_URL}/orders`, config);
-        
-        let fetchedData = [];
-        if (Array.isArray(response.data)) {
-          fetchedData = response.data;
-        } else if (response.data?.data && Array.isArray(response.data.data)) {
-          fetchedData = response.data.data;
-        } else if (response.data?.data?.orders && Array.isArray(response.data.data.orders)) {
-          fetchedData = response.data.data.orders;
-        } else if (response.data?.orders && Array.isArray(response.data.orders)) {
-          fetchedData = response.data.orders;
-        }
 
-        // 🔥 MULTI-TENANCY FILTER
-        if (myOrgId) {
-          fetchedData = fetchedData.filter(order => order.org_id === myOrgId);
-        }
+      let fetchedData = [];
+      if (Array.isArray(response.data)) {
+        fetchedData = response.data;
+      } else if (response.data?.data && Array.isArray(response.data.data)) {
+        fetchedData = response.data.data;
+      } else if (response.data?.orders && Array.isArray(response.data.orders)) {
+        fetchedData = response.data.orders;
+      }
 
-        setOrders(fetchedData);
+      // Backend theke asha fresh orders shorashori set korun
+      setOrders(fetchedData);
         
       } catch (error) {
         console.error("Order load error from your servers", error);

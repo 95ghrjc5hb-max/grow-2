@@ -119,35 +119,67 @@ const syncOrderToShopify = async (orgId, orderData) => {
 
 // Central Omnichannel Webhook Receiver
 export const handleMetaWebhook = async (req, res) => {
-  // 1. CRYPTOGRAPHIC SECURITY: Verify Meta HMAC-SHA256 Signature
+// 1. CRYPTOGRAPHIC SECURITY: Enterprise Multi-Secret HMAC-SHA256 Verification
   const signature = req.headers['x-hub-signature-256'];
-  const appSecret = process.env.META_APP_SECRET;
 
-  if (process.env.NODE_ENV === 'production' || signature) {
-    if (!signature || !appSecret) {
-      console.error('Security Alert: Missing Meta signature or META_APP_SECRET');
-      return res.status(401).json({ error: 'Unauthorized webhook request' });
-    }
+  if (!signature) {
+    console.error("Security Alert: Missing Meta signature header! Request dropped.");
+    return res.status(401).json({ error: 'Missing x-hub-signature-256' });
+  }
 
-    const elements = signature.split('=');
-    const signatureHash = elements[1];
+  const elements = signature.split('=');
+  const signatureHash = elements[1];
 
-    // Calculate expected hash using captured rawBody
+  if (!signatureHash) {
+    console.error("Security Alert: Malformed signature format! Request dropped.");
+    return res.status(401).json({ error: 'Invalid signature format' });
+  }
+
+  // Dual-Secret pipeline: Parent Meta App Secret and Instagram API Secret
+  const configuredSecrets = [
+    process.env.META_APP_SECRET,
+    process.env.INSTAGRAM_APP_SECRET
+  ].filter(Boolean);
+
+  const rawPayload = req.rawBody || Buffer.from(JSON.stringify(req.body));
+// --- TEMPORARY DEBUG LOG ---
+  console.log('--- HMAC DEBUG START ---');
+  console.log('1. RawBody ache kina:', Boolean(req.rawBody), 'Length:', req.rawBody?.length);
+  console.log('--- HMAC DEBUG START ---');
+ console.log('1. RawBody ache kina:', Boolean(req.rawBody), 'Length:', req.rawBody?.length);
+ console.log('👉 INCOMING PAYLOAD:', req.rawBody?.toString('utf8')); // <--- এই নতুন লাইনটি যোগ করুন
+console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 4) + '...' + s.slice(-4) : 'UNDEFINED'));
+  console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 4) + '...' + s.slice(-4) : 'UNDEFINED'));
+  console.log('3. Meta Incoming Hash:', signatureHash);
+  for (const s of configuredSecrets) {
+    const testHash = crypto.createHmac('sha256', s).update(rawPayload).digest('hex');
+    console.log(`4. Calculated (${s.slice(0, 4)}...):`, testHash);
+  }
+  console.log('--- HMAC DEBUG END ---');
+  // Verify signature against all valid configured secrets
+  let isSignatureValid = false;
+
+  for (const secret of configuredSecrets) {
     const expectedHash = crypto
-      .createHmac('sha256', appSecret)
-      .update(req.rawBody || JSON.stringify(req.body))
+      .createHmac('sha256', secret)
+      .update(rawPayload)
       .digest('hex');
 
-    // Timing-safe evaluation against timing attacks
-    const isSignatureValid = crypto.timingSafeEqual(
-      Buffer.from(signatureHash, 'utf8'),
-      Buffer.from(expectedHash, 'utf8')
-    );
+    const signatureBuffer = Buffer.from(signatureHash, 'utf8');
+    const expectedBuffer = Buffer.from(expectedHash, 'utf8');
 
-    if (!isSignatureValid) {
-      console.warn('Security Alert: Fake Meta webhook detected! Request dropped.');
-      return res.status(403).json({ error: 'Invalid HMAC signature' });
+    if (
+      signatureBuffer.length === expectedBuffer.length &&
+      crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
+    ) {
+      isSignatureValid = true;
+      break;
     }
+  }
+
+  if (!isSignatureValid) {
+    console.warn("Security Alert: Fake Meta webhook detected! Request dropped.");
+    return res.status(403).json({ error: 'Invalid HMAC signature' });
   }
 
   // Acknowledge Meta immediately to prevent retry-loops and connection holding
@@ -296,29 +328,63 @@ export const handleMetaWebhook = async (req, res) => {
 
             const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
 
-            // 6. Send WhatsApp Reply
-            await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
+           // 6. Send WhatsApp Reply with Dynamic 1 to max 6 Images
+    await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
 
-            if (replyImage && replyImage.startsWith('http')) {
-              try {
-                await fetch(`https://graph.facebook.com/v19.0/${activePhoneId}/messages`, {
-                  method: 'POST',
-                  headers: { 
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json' 
-                  },
-                  body: JSON.stringify({
-                    messaging_product: 'whatsapp',
-                    recipient_type: 'individual',
-                    to: customerPhone,
-                    type: 'image',
-                    image: { link: replyImage }
-                  })
-                });
-              } catch (imgErr) {
-                console.error('[WHATSAPP IMAGE SEND ERROR]:', imgErr.message);
-              }
-            }
+    let waImagesToSend = [];
+    const waReplyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
+// WhatsApp Multi-Image Fix (Line 304-318)
+    if (waReplyImage) {
+      const matchedProd = (products || []).find(p => 
+        p.image_url === waReplyImage ||
+        (typeof p.images === 'string' && p.images.includes(waReplyImage)) ||
+        (Array.isArray(p.images) && p.images.includes(waReplyImage))
+      ) || (products && products[0]);
+
+      const rawImages = matchedProd?.images || matchedProd?.image_url || waReplyImage;
+
+      if (Array.isArray(rawImages)) {
+        waImagesToSend = rawImages;
+      } else if (typeof rawImages === 'string') {
+        const trimmed = rawImages.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          try { waImagesToSend = JSON.parse(trimmed); } catch (e) { waImagesToSend = [trimmed]; }
+        } else if (trimmed.includes(',')) {
+          waImagesToSend = trimmed.split(',').map(u => u.trim()).filter(Boolean);
+        } else {
+          waImagesToSend = [trimmed];
+        }
+      } else {
+        waImagesToSend = [waReplyImage];
+      }
+
+      waImagesToSend = waImagesToSend.slice(0, 6);
+    }
+
+    for (const imgItem of waImagesToSend) {
+      const validUrl = typeof imgItem === 'string' ? imgItem : (imgItem?.src || imgItem?.url);
+      if (validUrl && validUrl.startsWith('http')) {
+        try {
+          await fetch(`https://graph.facebook.com/v19.0/${activePhoneId}/messages`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              recipient_type: 'individual',
+              to: customerPhone,
+              type: 'image',
+              image: { link: validUrl }
+            })
+          });
+          await new Promise(res => setTimeout(res, 300));
+        } catch (imgErr) {
+          console.error('[WHATSAPP IMAGE SEND ERROR]:', imgErr.message);
+        }
+      }
+    }
 
             // 7. Save outgoing message
             if (conv) {
@@ -448,11 +514,26 @@ export const handleMetaWebhook = async (req, res) => {
       if (events.length === 0) continue;
 
       for (const messagingEvent of events) {
-        if (!messagingEvent.message || messagingEvent.message.is_echo) continue;
+  if (!messagingEvent.message || messagingEvent.message.is_echo) continue;
 
-        const senderId = messagingEvent.sender?.id;
-        let customerMessage = messagingEvent.message?.text || '';
+  const messageId = messagingEvent.message.mid;
 
+  if (messageId) {
+    const { error: lockError } = await supabase
+      .from('processed_webhooks')
+      .insert({ mid: messageId });
+
+    if (lockError) {
+      if (lockError.code === '23505') {
+        console.warn(`[ENTERPRISE DEDUPLICATION] Concurrently dropped duplicate mid: ${messageId}`);
+        continue;
+      }
+      console.error('[IDEMPOTENCY DB ERROR]:', lockError.message);
+    }
+  }
+
+  const senderId = messagingEvent.sender?.id;
+  let customerMessage = messagingEvent.message?.text || '';
         // 1. Extract Image & Audio
         const imageAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'image');
         const imageUrl = imageAttachment?.payload?.url || null;
@@ -568,35 +649,102 @@ export const handleMetaWebhook = async (req, res) => {
             );
           }
          
-          const replyText = typeof aiResponse === 'string'
+          let replyText = typeof aiResponse === 'string'
             ? aiResponse
             : (aiResponse?.reply || 'Sorry, I could not process your request.');
             
-          const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
+        
 
-          // 6. Send Meta Reply
-          await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
+          // 6. Resolve all product images (Dynamic 1 to max 6 images)
+    let imagesToSend = [];
+    const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
 
-          if (replyImage && replyImage.startsWith('http')) {
-            try {
-              await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${integration.access_token}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  recipient: { id: senderId },
-                  message: {
-                    attachment: {
-                      type: 'image',
-                      payload: { url: replyImage, is_reusable: true }
-                    }
-                  }
-                })
-              });
-            } catch (imgErr) {
-              console.error('[IMAGE SEND ERROR]:', imgErr.message);
-            }
+    // A. Strip ugly raw Supabase URLs from text reply so bot never sends links as text
+    if (replyText) {
+      replyText = replyText
+        .replace(/•?\s*Image\s*\d*:\s*https?:\/\/\S+/gi, '')
+        .replace(/https?:\/\/[^\s]+supabase\.co\/storage\S+/gi, '')
+        .replace(/\n\s*\n\s*\n/g, '\n\n')
+        .trim();
+    }
+
+   // B. Extract all image URLs ONLY IF AI decided to show images (replyImage exists)
+    if (replyImage) {
+      const matchedProd = (products || []).find(p => 
+        p.image_url === replyImage ||
+        (typeof p.images === 'string' && p.images.includes(replyImage)) ||
+        (Array.isArray(p.images) && p.images.includes(replyImage))
+      ) || (products && products[0]);
+
+      const rawImages = matchedProd?.images || matchedProd?.image_url || replyImage;
+
+      if (Array.isArray(rawImages)) {
+        imagesToSend = rawImages;
+      } else if (typeof rawImages === 'string') {
+        const trimmed = rawImages.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          try {
+            imagesToSend = JSON.parse(trimmed);
+          } catch (e) {
+            imagesToSend = [trimmed];
+          }
+        } else if (trimmed.includes(',')) {
+          // Breaks "url1,url2,url3" into distinct array items
+          imagesToSend = trimmed.split(',').map(u => u.trim()).filter(Boolean);
+        } else {
+          imagesToSend = [trimmed];
+        }
+      }
+
+      if (imagesToSend.length === 0) {
+        imagesToSend = [replyImage];
+      }
+
+      // Dynamic Limit: Send 1 up to maximum 6 images
+      imagesToSend = imagesToSend.slice(0, 6);
+    }
+    console.log(`[DISPATCHING ${imagesToSend.length} PRODUCT IMAGES]:`, imagesToSend);
+
+    // 1. Send clean text reply first
+    if (replyText) {
+      await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
+    }
+
+    // 2. Loop and send each image individually to Messenger with explicit terminal logging
+    for (let i = 0; i < imagesToSend.length; i++) {
+      const imgUrl = imagesToSend[i];
+      const cleanUrl = typeof imgUrl === 'string' ? imgUrl : (imgUrl?.src || imgUrl?.url);
+
+      if (cleanUrl && cleanUrl.startsWith('http')) {
+        try {
+          const res = await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${integration.access_token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              recipient: { id: senderId },
+              message: {
+                attachment: {
+                  type: 'image',
+                  payload: { url: cleanUrl, is_reusable: true }
+                }
+              }
+            })
+          });
+
+          const metaData = await res.json();
+          if (res.ok) {
+            console.log(`[META GRAPH API SUCCESS - IMAGE ${i + 1}/${imagesToSend.length}]:`, metaData);
+          } else {
+            console.error(`[META GRAPH API ERROR - IMAGE ${i + 1}]:`, metaData);
           }
 
+          // 350ms pause to preserve image order in Messenger
+          await new Promise(res => setTimeout(res, 350));
+        } catch (imgErr) {
+          console.error(`[IMAGE SEND FAILED - IMAGE ${i + 1}]:`, imgErr.message);
+        }
+      }
+    }
           // 7. Save outgoing message
           if (conv) {
             await supabase.from('messages').insert({

@@ -1,19 +1,19 @@
 import { supabase } from '../config/supabase.js';
 import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.js';
-
 export const getConversations = async (req, res) => {
   try {
-    // Extract the ID from the token payload (saved as 'userid' in server.js auth route)
-    const orgId = req.user?.userid || req.user?.id;
+    const orgId = req.orgId || req.user?.org_id;
 
     if (!orgId) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'Unauthorized: Missing User ID in token.' 
+      return res.status(200).json({
+        success: true,
+        data: [],
+        conversations: [],
+        message: 'No active organization found'
       });
     }
 
-    // Fetch conversations and their associated messages from Supabase securely
+    // Fetch conversations and messages strictly by organization
     const { data: conversations, error } = await supabase
       .from('conversations')
       .select(`
@@ -27,14 +27,15 @@ export const getConversations = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: conversations || []
+      data: conversations || [],
+      conversations: conversations || []
     });
 
   } catch (error) {
     console.error('[UNIFIED INBOX FETCH ERROR]:', error.message);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 };
@@ -42,7 +43,7 @@ export const getConversations = async (req, res) => {
 // 2. Send Manual Outbound Message from Unified Inbox Dashboard
 export const sendManualMessage = async (req, res) => {
   try {
-    const orgId = req.user?.id || req.user?.userId || req.user?.sub || req.user?.org_id;
+    const orgId = req.orgId || req.user?.org_id;
     
     // Added conversationId to match Supabase schema
     const { customerPhone, messageText, platform, conversationId } = req.body;
