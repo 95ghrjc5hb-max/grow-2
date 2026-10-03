@@ -234,13 +234,69 @@ async function revokeSession(userId, sessionId) {
   assertNoError(error, "Failed to revoke session");
   if (!data) throw new NotFoundError("Session not found");
 }
-async function deleteAccount(userId) {
-  const { error } = await supabase
-    .from("profiles")
-    .delete()
-    .eq("id", userId);
+async function deleteAccount(userId, passedOrgId) {
+  let targetOrgId = passedOrgId;
 
-  assertNoError(error, "Failed to delete account data from database");
+  // Defensive: কন্ট্রোলার থেকে orgId না এলেও organization_members থেকে খুঁজে নেবে
+  if (!targetOrgId) {
+    const { data: member } = await supabase
+      .from('organization_members')
+      .select('org_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (member?.org_id) targetOrgId = member.org_id;
+  }
+
+  // ১. সম্পূর্ণ অর্গানাইজেশন ও এর সব ডিপেন্ডেন্ট ডাটা ওয়াইপ
+  if (targetOrgId) {
+    // Webhook logs & idempotency
+    await supabase.from('webhook_logs').delete().eq('org_id', targetOrgId);
+    await supabase.from('processed_webhooks').delete().eq('org_id', targetOrgId);
+
+    // Chat History (messages -> conversations)
+    const { data: convs } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('org_id', targetOrgId);
+
+    if (convs && convs.length > 0) {
+      const convIds = convs.map((c) => c.id);
+      await supabase.from('messages').delete().in('conversation_id', convIds);
+    }
+    await supabase.from('conversations').delete().eq('org_id', targetOrgId);
+
+    // Business Data
+    await supabase.from('orders').delete().eq('org_id', targetOrgId);
+    await supabase.from('products').delete().eq('org_id', targetOrgId);
+    await supabase.from('integrations').delete().eq('org_id', targetOrgId);
+    await supabase.from('bot_configs').delete().eq('org_id', targetOrgId);
+    await supabase.from('escalation_rules').delete().eq('org_id', targetOrgId);
+    await supabase.from('api_keys').delete().eq('org_id', targetOrgId);
+    await supabase.from('notification_settings').delete().eq('org_id', targetOrgId);
+
+    // Billing & Invoices
+    await supabase.from('invoices').delete().eq('org_id', targetOrgId);
+    await supabase.from('billing_accounts').delete().eq('org_id', targetOrgId);
+
+    // Organization Members & Org Table
+    await supabase.from('organization_members').delete().eq('org_id', targetOrgId);
+    await supabase.from('organizations').delete().eq('id', targetOrgId);
+  }
+
+  // ২. ইউজার স্পেসিফিক ডাটা ওয়াইপ
+  await supabase.from('user_sessions').delete().eq('user_id', userId);
+  await supabase.from('profiles').delete().eq('id', userId);
+
+  // ৩. Supabase Auth (auth.users) থেকে পার্মানেন্ট ডিলিট
+  if (supabase.auth?.admin) {
+    try {
+      await supabase.auth.admin.deleteUser(userId);
+    } catch (authErr) {
+      console.warn('[AUTH ADMIN DELETE ERROR]:', authErr.message);
+    }
+  }
+
+  return { success: true };
 }
 // ---------------------------------------------------------------------------
 // Store & workspace

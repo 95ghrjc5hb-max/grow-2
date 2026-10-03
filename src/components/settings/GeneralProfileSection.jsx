@@ -125,11 +125,16 @@ const handleDeleteAccount = async () => {
     if (!confirmed) return;
 
     setIsDeleting(true);
-    try {
+      try {
         await settings.deleteAccount(); // Calling the API
-        // Logout user after deletion
-        window.location.href = "/login"; // Or use your auth context logout
-    } catch (err) {
+        
+        // Enterprise Cleanup: Clear all tokens & tenant sessions
+        localStorage.clear();
+        sessionStorage.clear();
+        
+        // Immediate redirect to login
+        window.location.href = "/login";
+      } catch (err) {
         console.error("Failed to delete account:", err);
         alert("Failed to delete account. Please try again.");
     } finally {

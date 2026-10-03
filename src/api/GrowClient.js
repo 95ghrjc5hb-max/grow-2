@@ -71,9 +71,10 @@ export const settings = {
   updateProfile: (payload) => api.patch("/settings/profile", payload),
   changePassword: (payload) => api.post("/settings/profile/password", payload),
   toggle2FA: (enabled) => api.post("/settings/profile/2fa", { enabled }),
-  getSessions: () => api.get("/settings/profile/sessions"),
-  revokeSession: (sessionId) => api.delete(`/settings/profile/sessions/${sessionId}`),
-
+ // Line 74 theke 77 erup hobe:
+    getSessions: () => api.get("/settings/profile/sessions"),
+    revokeSession: (sessionId) => api.delete(`/settings/profile/sessions/${sessionId}`),
+    deleteAccount: () => api.delete("/settings/profile"),
   // Store / workspace
 getWorkspace: () => api.get("/settings/workspace"),
   updateWorkspace: (payload) => api.patch("/settings/workspace", payload),

@@ -50,10 +50,21 @@ export const revokeSession = asyncHandler(async (req, res) => {
   await settingsService.revokeSession(getUserId(req), req.params.sessionId);
   res.json({ success: true, data: null });
 });
-
 export const deleteAccount = asyncHandler(async (req, res) => {
-  await settingsService.deleteAccount(getUserId(req));
-  res.json({ success: true, message: "Account deleted successfully" });
+  const userId = getUserId(req);
+  const orgId = req.orgId || req.user?.org_id;
+
+  if (!userId) {
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  // Service call kore shob table cascade delete kora
+  await settingsService.deleteAccount(userId, orgId);
+
+  res.json({
+    success: true,
+    message: "Your account and all workspace data have been permanently deleted."
+  });
 });
 // ---- Store & workspace ----
 
