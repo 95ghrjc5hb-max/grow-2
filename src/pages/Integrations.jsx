@@ -206,16 +206,15 @@ const handleWhatsAppCodeExchange = async (code) => {
     // 1. Dynamic Environment Detection
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-    // 2. Dynamic App ID: Local-e 'grow local dev', Online-e 'ai grow'
-    const appId = isLocal 
-      ? (import.meta.env.VITE_META_APP_ID || '1334514158579851')
-      : (import.meta.env.VITE_META_APP_ID || '1487050622822623');
+    // 2. Strict Environment App ID Binding
+    const appId = isLocal
+      ? (import.meta.env.VITE_DEV_META_APP_ID || '1334514158579851')
+      : (import.meta.env.VITE_PROD_META_APP_ID || '1457050622922623');
 
-    // 3. Dynamic HTTPS Redirect URI
+    // 3. Strict Environment Callback Routing
     const redirectUri = isLocal
       ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/meta/callback'
       : 'https://api.growcorebot.com/api/auth/meta/callback';
-
     // 4. Dynamic Scope Logic
     let scope = '';
     if (platformKey === "messenger") {
