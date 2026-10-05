@@ -196,43 +196,44 @@ const handleWhatsAppCodeExchange = async (code) => {
   };
 
  // LOGIC: Enterprise OAuth Flow (Facebook Messenger vs Standalone Instagram)
-    const handleMetaOAuth = (platformKey) => {
-        const { token } = getTokenAndOrgId();
-        if (!token) {
-            toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
-            return;
-        }
+  const handleMetaOAuth = (platformKey) => {
+    const { token, myOrgId } = getTokenAndOrgId();
+    if (!token) {
+      toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
+      return;
+    }
 
-        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const customState = encodeURIComponent(`${platformKey}____${token}`);
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    
+    // 🛡️ Fix 1: State must be short (UUID + platformKey is only ~45 chars, well under 128 chars limit)
+    const customState = encodeURIComponent(`${platformKey}__${myOrgId || 'default'}`);
 
-        let oauthUrl = '';
-if (platformKey === 'instagram') {
-            const igAppId = '1040716822144150';
-            const igRedirectUri = isLocal
-                ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/instagram/callback'
-                : 'https://api.growcorebot.com/api/auth/instagram/callback';
-
-            const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
-
-            oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${igScope}&response_type=code&state=${customState}`;
+    let oauthUrl = '';
+    if (platformKey === 'instagram') {
+      const igAppId = '1040716822144150';
       
-         } else {
-            // Standard Facebook Messenger Flow
-            const fbAppId = isLocal
-                ? (import.meta.env.VITE_DEV_META_APP_ID || '1334514158579851')
-                : (import.meta.env.VITE_PROD_META_APP_ID || '1457050622922623');
+      // 🛡️ Fix 2: Always use verified production callback so Meta never complains about unverified domains
+      const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
+      const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
 
-            const fbRedirectUri = isLocal
-                ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/meta/callback'
-                : 'https://api.growcorebot.com/api/auth/meta/callback';
+      oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${igScope}&response_type=code&state=${customState}`;
+    } else {
+      // Standard Facebook Messenger Flow
+      const fbAppId = isLocal
+        ? (import.meta.env.VITE_DEV_META_APP_ID || '1457050622922623')
+        : (import.meta.env.VITE_PROD_META_APP_ID || '1457050622922623');
 
-            const fbScope = 'pages_show_list,pages_messaging,pages_read_engagement';
+      const fbRedirectUri = isLocal
+        ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/meta/callback'
+        : 'https://api.growcorebot.com/api/auth/meta/callback';
 
-            oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(fbRedirectUri)}&scope=${fbScope}&state=${customState}&response_type=code&auth_type=rerequest`;
-        }
+      const fbScope = 'pages_show_list,pages_messaging,pages_read_engagement';
 
-        const popup = window.open(oauthUrl, "ConnectMeta", "width=600,height=750,status=yes,resizable=yes");
+      oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(fbRedirectUri)}&scope=${fbScope}&state=${customState}&response_type=code&auth_type=rerequest`;
+    }
+
+    console.log("EXACT OAUTH URL:", oauthUrl);
+    const popup = window.open(oauthUrl, "ConnectMeta", "width=600,height=750,status=yes,resizable=yes");
 
         const handlePopupMessage = async (event) => {
             const allowedOrigins = [

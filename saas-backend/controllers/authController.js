@@ -161,21 +161,14 @@ export const handleInstagramCallback = async (req, res) => {
             return res.status(400).send("Missing OAuth code or state parameter from Instagram.");
         }
 
-        const [platform, frontendToken] = decodeURIComponent(state).split("____");
-        const tokenParts = frontendToken.split('.');
-        const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
-        const userId = payload.sub;
+        // 1. Extract platform and orgId securely from short state
+        const [platform, passedOrgId] = decodeURIComponent(state).split('__');
 
-        const { data: userProfile, error: profileErr } = await supabase
-            .from('profiles')
-            .select('org_id')
-            .eq('id', userId)
-            .single();
-
-        if (profileErr || !userProfile?.org_id) {
-            throw new Error("User organization not found.");
+        if (!passedOrgId || passedOrgId === 'default') {
+            throw new Error("Organization ID is missing from state parameter.");
         }
 
+        
         const orgId = userProfile.org_id;
         const isLocal = req.headers.host.includes('localhost') || req.headers.host.includes('ngrok');
         const igRedirectUri = isLocal
