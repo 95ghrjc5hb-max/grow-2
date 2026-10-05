@@ -70,23 +70,7 @@ const orgId = userProfile.org_id;
     if (pageData.error) {
       throw new Error(pageData.error.message);
     }
-
-   // DIRECT PAGE DEBUG CALL
-    console.log("Checking direct page access for 112533424784697...");
-    const directRes = await fetch(`https://graph.facebook.com/v20.0/112533424784697?fields=id,name,access_token&access_token=${tokenData.access_token}`);
-    const directData = await directRes.json();
-    console.log("DIRECT PAGE API RESPONSE:", JSON.stringify(directData));
-
-    if (directData.error) {
-      console.error("META GRAPH ERROR:", directData.error);
-      throw new Error("Meta Error: " + directData.error.message);
-    }
-
-    if (directData.id) {
-      pageData = { data: [directData] };
-    } else {
-      throw new Error('No Facebook Page found connected to this account.');
-    }
+    
     const connectedPage = pageData.data[0]; 
     // Auto-subscribe the page to webhooks via Meta Graph API
     try {
@@ -166,4 +150,143 @@ const orgId = userProfile.org_id;
     `;
     return res.status(500).send(htmlResponse);
   }
+};
+// ==========================================
+// Standalone Instagram Direct Callback (Enterprise Standard)
+// ==========================================
+export const handleInstagramCallback = async (req, res) => {
+    try {
+        const { code, state } = req.query;
+        if (!code || !state) {
+            return res.status(400).send("Missing OAuth code or state parameter from Instagram.");
+        }
+
+        const [platform, frontendToken] = decodeURIComponent(state).split("____");
+        const tokenParts = frontendToken.split('.');
+        const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+        const userId = payload.sub;
+
+        const { data: userProfile, error: profileErr } = await supabase
+            .from('profiles')
+            .select('org_id')
+            .eq('id', userId)
+            .single();
+
+        if (profileErr || !userProfile?.org_id) {
+            throw new Error("User organization not found.");
+        }
+
+        const orgId = userProfile.org_id;
+        const isLocal = req.headers.host.includes('localhost') || req.headers.host.includes('ngrok');
+        const igRedirectUri = isLocal
+            ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/instagram/callback'
+            : 'https://api.growcorebot.com/api/auth/instagram/callback';
+
+        const igAppId = '1040716822144150';
+        const igAppSecret = process.env.INSTAGRAM_APP_SECRET;
+
+        if (!igAppSecret) {
+            throw new Error("INSTAGRAM_APP_SECRET is not configured in server environment.");
+        }
+
+        // 1. Exchange auth code for Short-Lived Access Token & User ID
+        const formData = new URLSearchParams();
+        formData.append('client_id', igAppId);
+        formData.append('client_secret', igAppSecret);
+        formData.append('grant_type', 'authorization_code');
+        formData.append('redirect_uri', igRedirectUri);
+        formData.append('code', code);
+
+        const tokenRes = await fetch('https://api.instagram.com/oauth/access_token', {
+            method: 'POST',
+            body: formData
+        });
+        const tokenData = await tokenRes.json();
+
+        if (tokenData.error_type || !tokenData.access_token) {
+            throw new Error(tokenData.error_message || "Failed to exchange Instagram authorization code.");
+        }
+
+        const shortLivedToken = tokenData.access_token;
+        const instagramUserId = String(tokenData.user_id);
+
+        // 2. Exchange for 60-Day Long-Lived Instagram Token
+        const longLivedRes = await fetch(
+            `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${igAppSecret}&access_token=${shortLivedToken}`
+        );
+        const longLivedData = await longLivedRes.json();
+        const permanentToken = longLivedData.access_token || shortLivedToken;
+
+        // 3. Auto-Subscribe Instagram Account to Webhooks
+        try {
+            const subRes = await fetch(`https://graph.instagram.com/v21.0/me/subscribed_apps`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    subscribed_fields: ['messages', 'messaging_postbacks'],
+                    access_token: permanentToken
+                })
+            });
+            const subData = await subRes.json();
+            console.log("[INSTAGRAM WEBHOOK AUTO-SUBSCRIBED]:", subData);
+        } catch (subErr) {
+            console.warn("[INSTAGRAM SUBSCRIBE WARNING]:", subErr.message);
+        }
+
+        // 4. Fetch Instagram Username
+        let igUsername = 'Instagram User';
+        try {
+            const userRes = await fetch(`https://graph.instagram.com/v21.0/me?fields=id,username&access_token=${permanentToken}`);
+            const userData = await userRes.json();
+            if (userData.username) igUsername = userData.username;
+        } catch (e) {
+            console.warn("Could not fetch Instagram username:", e.message);
+        }
+
+        // 5. Upsert into Supabase integrations
+        const { error: upsertErr } = await supabase.from('integrations').upsert({
+            org_id: orgId,
+            platform: 'instagram',
+            page_id: instagramUserId,
+            page_name: igUsername,
+            access_token: permanentToken,
+            status: 'connected',
+            is_active: true,
+            updated_at: new Date()
+        }, { onConflict: 'org_id, platform' });
+
+        if (upsertErr) throw upsertErr;
+
+        // 6. Return Clean HTML with postMessage
+        const htmlSuccess = `
+            <!DOCTYPE html>
+            <html>
+            <head><title>Instagram Connected</title></head>
+            <body style="font-family:sans-serif;text-align:center;padding-top:50px;">
+                <h2 style="color:#10b981;">Instagram Connected Successfully!</h2>
+                <p>Connected account: <b>@${igUsername}</b></p>
+                <p>This window will close automatically...</p>
+                <script>
+                    if (window.opener) {
+                        window.opener.postMessage({ status: "success", platform: "instagram" }, "*");
+                    }
+                    setTimeout(() => window.close(), 1200);
+                </script>
+            </body>
+            </html>
+        `;
+        return res.status(200).send(htmlSuccess);
+
+    } catch (err) {
+        console.error("[INSTAGRAM DIRECT AUTH ERROR]:", err.message);
+        return res.status(500).send(`
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family:sans-serif;text-align:center;padding-top:50px;">
+                <h2 style="color:#ef4444;">Instagram Connection Failed</h2>
+                <p>${err.message}</p>
+            </body>
+            </html>
+        `);
+    }
 };

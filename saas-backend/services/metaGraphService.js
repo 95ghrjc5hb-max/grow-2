@@ -61,26 +61,29 @@ export const exchangeMetaCode = async (code, storeId) => {
     throw new Error('Failed to complete Meta authentication');
   }
 };
-// Send Message to Messenger or Instagram via Meta Graph API
+// Send Message to Messenger or Instagram via Meta Graph API (Enterprise Hybrid Handler)
 export const sendMetaReply = async (pageAccessToken, pageId, recipientId, messageText) => {
-  try {
-    const url = `${GRAPH_API_URL}/me/messages`;
+    try {
+        // Detect Standalone Instagram Token (starts with IG) vs Facebook Page Token (starts with EAA)
+        const isInstagramToken = pageAccessToken.startsWith('IG') || (pageAccessToken.length < 150 && !pageAccessToken.startsWith('EAA'));
+        const baseUrl = isInstagramToken ? 'https://graph.instagram.com/v21.0' : 'https://graph.facebook.com/v21.0';
 
-    const payload = {
-      recipient: { id: recipientId },
-      message: { text: messageText }
-    };
+        const url = `${baseUrl}/me/messages`;
+        const payload = {
+            recipient: { id: recipientId },
+            message: { text: messageText }
+        };
 
-    const response = await axios.post(url, payload, {
-      params: { access_token: pageAccessToken }
-    });
+        const response = await axios.post(url, payload, {
+            params: { access_token: pageAccessToken }
+        });
 
-    console.log('[META GRAPH API SUCCESS]:', response.data);
-    return response.data;
-  } catch (error) {
-    console.error('[META GRAPH API ERROR]:', error?.response?.data || error.message);
-    throw error;
-  }
+        console.log('[META GRAPH API SUCCESS]:', response.data);
+        return response.data;
+    } catch (error) {
+        console.error('[META GRAPH API ERROR]:', error.response?.data || error.message);
+        throw error;
+    }
 };
 // Automatically subscribe Facebook Page & Instagram to Webhook events
 export const subscribeAppToPage = async (pageAccessToken, pageId) => {

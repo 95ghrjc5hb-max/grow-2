@@ -195,71 +195,72 @@ const handleWhatsAppCodeExchange = async (code) => {
     return channels.find((c) => c.platform === platform);
   };
 
- // LOGIC: Secure Meta OAuth Flow with Dynamic Scopes
-  const handleMetaOAuth = (platformKey) => {
-    const { token } = getTokenAndOrgId();
-    if (!token) {
-      toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
-      return;
-    }
+ // LOGIC: Enterprise OAuth Flow (Facebook Messenger vs Standalone Instagram)
+    const handleMetaOAuth = (platformKey) => {
+        const { token } = getTokenAndOrgId();
+        if (!token) {
+            toast({ title: "Authentication error", description: "Please log in again.", variant: "destructive" });
+            return;
+        }
 
-    // 1. Dynamic Environment Detection
-    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const customState = encodeURIComponent(`${platformKey}____${token}`);
 
-    // 2. Strict Environment App ID Binding
-    const appId = isLocal
-      ? (import.meta.env.VITE_DEV_META_APP_ID || '1334514158579851')
-      : (import.meta.env.VITE_PROD_META_APP_ID || '1457050622922623');
+        let oauthUrl = '';
+if (platformKey === 'instagram') {
+            const igAppId = '1040716822144150';
+            const igRedirectUri = isLocal
+                ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/instagram/callback'
+                : 'https://api.growcorebot.com/api/auth/instagram/callback';
 
-    // 3. Strict Environment Callback Routing
-    const redirectUri = isLocal
-      ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/meta/callback'
-      : 'https://api.growcorebot.com/api/auth/meta/callback';
-    // 4. Dynamic Scope Logic
-    let scope = '';
-    if (platformKey === "messenger") {
-      scope = 'pages_show_list,pages_messaging,pages_read_engagement';
-    } else if (platformKey === "instagram") {
-      scope = 'pages_show_list,instagram_basic,instagram_manage_messages,pages_read_engagement';
-    }
+            const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
 
-    // 3-ti underscore (___) ebong auth_type=rerequest jog kora holo
-    const customState = encodeURIComponent(platformKey + "___" + token);
-    const oauthUrl = "https://www.facebook.com/v20.0/dialog/oauth?client_id=" + appId 
-      + "&redirect_uri=" + encodeURIComponent(redirectUri) 
-      + "&scope=" + scope 
-      + "&state=" + customState 
-      + "&response_type=code"
-      + "&auth_type=rerequest";
-    const popup = window.open(oauthUrl, "ConnectMeta", "width=600,height=650,status=yes,resizable=yes");
+            oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${igScope}&response_type=code&state=${customState}`;
+      
+         } else {
+            // Standard Facebook Messenger Flow
+            const fbAppId = isLocal
+                ? (import.meta.env.VITE_DEV_META_APP_ID || '1334514158579851')
+                : (import.meta.env.VITE_PROD_META_APP_ID || '1457050622922623');
 
-    const handlePopupMessage = async (event) => {
-      const allowedOrigins = [
-        'https://api.growcorebot.com',
-        'https://unloving-unnamed-flight.ngrok-free.dev',
-        'http://localhost:5000',
-        'http://localhost:5173',
-        'http://127.0.0.1:5173'
-      ];
-      if (!allowedOrigins.includes(event.origin)) return;
+            const fbRedirectUri = isLocal
+                ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/meta/callback'
+                : 'https://api.growcorebot.com/api/auth/meta/callback';
 
-      if (event.data?.status === "success") {
-        toast({ title: `${platformKey === 'messenger' ? 'Facebook' : 'Instagram'} connected successfully!` });
-        fetchActiveIntegrations();
-        window.removeEventListener("message", handlePopupMessage);
-      }
+            const fbScope = 'pages_show_list,pages_messaging,pages_read_engagement';
+
+            oauthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${fbAppId}&redirect_uri=${encodeURIComponent(fbRedirectUri)}&scope=${fbScope}&state=${customState}&response_type=code&auth_type=rerequest`;
+        }
+
+        const popup = window.open(oauthUrl, "ConnectMeta", "width=600,height=750,status=yes,resizable=yes");
+
+        const handlePopupMessage = async (event) => {
+            const allowedOrigins = [
+                'https://api.growcorebot.com',
+                'https://unloving-unnamed-flight.ngrok-free.dev',
+                'http://localhost:5000',
+                'http://localhost:5173',
+                'http://127.0.0.1:5173'
+            ];
+            if (!allowedOrigins.includes(event.origin)) return;
+
+            if (event.data?.status === "success") {
+                toast({ title: `${platformKey === 'messenger' ? 'Facebook' : 'Instagram'} connected successfully!` });
+                fetchActiveIntegrations();
+                window.removeEventListener("message", handlePopupMessage);
+            }
+        };
+
+        window.addEventListener("message", handlePopupMessage);
+
+        const timer = setInterval(() => {
+            if (popup && popup.closed) {
+                clearInterval(timer);
+                window.removeEventListener("message", handlePopupMessage);
+                fetchActiveIntegrations();
+            }
+        }, 500);
     };
-
-    window.addEventListener("message", handlePopupMessage);
-
-    const timer = setInterval(() => {
-      if (popup && popup.closed) {
-        clearInterval(timer);
-        window.removeEventListener("message", handlePopupMessage);
-        fetchActiveIntegrations();
-      }
-    }, 500);
-  };
    
 
   const handleDisconnect = async (platformKey) => {
