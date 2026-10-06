@@ -237,10 +237,8 @@ export const handleInstagramCallback = async (req, res) => {
             org_id: orgId,
             platform: 'instagram',
             page_id: instagramUserId,
-            page_name: igUsername,
             access_token: permanentToken,
             status: 'connected',
-      
             updated_at: new Date()
         }, { onConflict: 'org_id, platform' });
 
