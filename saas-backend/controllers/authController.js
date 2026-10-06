@@ -169,13 +169,9 @@ export const handleInstagramCallback = async (req, res) => {
         }
 
         
-        const orgId = userProfile.org_id;
-        const isLocal = req.headers.host.includes('localhost') || req.headers.host.includes('ngrok');
-        const igRedirectUri = isLocal
-            ? 'https://unloving-unnamed-flight.ngrok-free.dev/api/auth/instagram/callback'
-            : 'https://api.growcorebot.com/api/auth/instagram/callback';
-
-        const igAppId = '1040716822144150';
+       const orgId = passedOrgId;
+        const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
+        const igAppId = '1040716822144110';
         const igAppSecret = process.env.INSTAGRAM_APP_SECRET;
 
         if (!igAppSecret) {

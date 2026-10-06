@@ -210,13 +210,12 @@ const handleWhatsAppCodeExchange = async (code) => {
 
     let oauthUrl = '';
     if (platformKey === 'instagram') {
-      const igAppId = '1040716822144150';
-      
-      // 🛡️ Fix 2: Always use verified production callback so Meta never complains about unverified domains
-      const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
-      const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
+            const igAppId = '1040716822144110';
+            const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
+            const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights';
 
-      oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${igScope}&response_type=code&state=${customState}`;
+            oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${encodeURIComponent(igScope)}&response_type=code&state=${customState}`;
+        
     } else {
       // Standard Facebook Messenger Flow
       const fbAppId = isLocal
