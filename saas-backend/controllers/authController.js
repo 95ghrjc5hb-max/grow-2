@@ -240,7 +240,7 @@ export const handleInstagramCallback = async (req, res) => {
             page_name: igUsername,
             access_token: permanentToken,
             status: 'connected',
-            is_active: true,
+      
             updated_at: new Date()
         }, { onConflict: 'org_id, platform' });
 
