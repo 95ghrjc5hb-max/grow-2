@@ -9,39 +9,25 @@ export const handleMetaCallback = async (req, res) => {
       return res.status(400).send('Missing OAuth code or state parameters from Meta');
     }
 
-    // 1. Extract platform and frontend token securely passed via the 'state' parameter
-    const [platform, frontendToken] = decodeURIComponent(state).split('___');
+    // 1. Extract platform and orgId securely from short state
+        const [platform, passedOrgId] = decodeURIComponent(state).split('__');
 
-    if (!frontendToken) {
-      throw new Error('User authentication token is missing from the state parameter');
-    }
+        if (!passedOrgId || passedOrgId === 'default') {
+            throw new Error("Organization ID is missing from state parameter. Please log in again.");
+        }
 
-    // 2. Decode the Supabase JWT token manually to extract the user's org_id
-    const tokenParts = frontendToken.split('.');
-    if (tokenParts.length !== 3) {
-      throw new Error('Invalid JWT Token Format');
-    }
+        // Resolve true organization ID from profiles if passedOrgId is a user ID
+        let orgId = passedOrgId;
 
-    // Parse the payload (middle part of the JWT)
-    const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
-    const userId = payload.sub;
+        const { data: userProfile } = await supabase
+            .from('profiles')
+            .select('org_id')
+            .eq('id', passedOrgId)
+            .maybeSingle();
 
-// profiles টেবিল থেকে ইউজারের আসল org_id বের করা
-const { data: userProfile, error: profileErr } = await supabase
-  .from('profiles')
-  .select('org_id')
-  .eq('id', userId)
-  .single();
-
-if (profileErr || !userProfile?.org_id) {
-  throw new Error('User organization not found. Please re-login.');
-}
-
-const orgId = userProfile.org_id;
-
-    if (!orgId) {
-      throw new Error('User ID could not be extracted from the token');
-    }
+        if (userProfile?.org_id) {
+            orgId = userProfile.org_id;
+        }
 
     // 3. Exchange the short-lived code for a long-lived Access Token from Meta
    const redirectUri = process.env.META_REDIRECT_URI || 'http://localhost:8080/api/auth/meta/callback';
@@ -169,7 +155,18 @@ export const handleInstagramCallback = async (req, res) => {
         }
 
         
-       const orgId = passedOrgId;
+       let orgId = passedOrgId;
+
+        // Resolve true organization ID from profiles if passedOrgId is a user ID
+        const { data: userProfile } = await supabase
+            .from('profiles')
+            .select('org_id')
+            .eq('id', passedOrgId)
+            .maybeSingle();
+
+        if (userProfile?.org_id) {
+            orgId = userProfile.org_id;
+        }
         const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
         const igAppId = '1040716822144110';
         const igAppSecret = process.env.INSTAGRAM_APP_SECRET;
