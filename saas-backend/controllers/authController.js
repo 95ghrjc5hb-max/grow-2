@@ -219,25 +219,29 @@ export const handleInstagramCallback = async (req, res) => {
             console.warn("INSTAGRAM SUBSCRIBE WARNING!:", subErr.message);
         }
 
-        // 4. Fetch Instagram Username
-        let igUsername = 'Instagram User';
-        try {
-            const userRes = await fetch(`https://graph.instagram.com/v21.0/me?fields=id,username&access_token=${permanentToken}`);
-            const userData = await userRes.json();
-            if (userData.username) igUsername = userData.username;
-        } catch (e) {
-            console.warn("Could not fetch Instagram username:", e.message);
-        }
+        // // 4. Fetch Instagram Username & Real Business Account ID (Enterprise Standard)
+    let igUsername = 'Instagram User';
+    let finalInstagramId = instagramUserId; // fallback if dynamic fetch fails
 
-        // 5. Upsert into Supabase integrations
-        const { error: upsertErr } = await supabase.from('integrations').upsert({
-            org_id: orgId,
-            platform: 'instagram',
-            page_id: instagramUserId,
-            access_token: permanentToken,
-            status: 'connected',
-            updated_at: new Date()
-        }, { onConflict: 'org_id, platform' });
+    try {
+        const userRes = await fetch(`https://graph.instagram.com/v21.0/me?fields=id,username,user_id,account_type&access_token=${permanentToken}`);
+        const userData = await userRes.json();
+        
+        if (userData.username) igUsername = userData.username;
+        if (userData.id) finalInstagramId = String(userData.id);
+    } catch (e) {
+        console.warn("[OAUTH WARNING] Could not fetch dynamic Instagram profile:", e.message);
+    }
+
+    // // 5. Upsert into Supabase integrations
+    const { error: upsertErr } = await supabase.from('integrations').upsert({
+        org_id: orgId,
+        platform: 'instagram',
+        page_id: finalInstagramId,
+        access_token: permanentToken,
+        status: 'connected',
+        updated_at: new Date()
+    }, { onConflict: 'org_id, platform' });
 
         if (upsertErr) throw upsertErr;
 
