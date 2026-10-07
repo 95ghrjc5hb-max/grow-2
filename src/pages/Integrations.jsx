@@ -211,11 +211,13 @@ const handleWhatsAppCodeExchange = async (code) => {
     let oauthUrl = '';
     if (platformKey === 'instagram') {
             const igAppId = '1040716822144110';
-            const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
-            const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights';
-
-            oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${encodeURIComponent(igScope)}&response_type=code&state=${customState}`;
+        // Line 214-218 Replace:
+        const igRedirectUri = isLocal
+            ? 'http://localhost:5000/api/auth/instagram/callback'
+            : 'https://api.growcorebot.com/api/auth/instagram/callback';
+        const igScope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
         
+        oauthUrl = `https://www.instagram.com/oauth/authorize?force_reauth=true&client_id=${igAppId}&redirect_uri=${encodeURIComponent(igRedirectUri)}&scope=${igScope}&response_type=code&state=${customState}`;
     } else {
       // Standard Facebook Messenger Flow
       const fbAppId = isLocal

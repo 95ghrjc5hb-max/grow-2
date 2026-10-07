@@ -142,7 +142,9 @@ export const handleMetaCallback = async (req, res) => {
 // ==========================================
 export const handleInstagramCallback = async (req, res) => {
     try {
-        const { code, state } = req.query;
+        // Line 145 Replace:
+    const { code, state } = req.query;
+    const cleanCode = (code || '').replace(/#_.*$/, '').replace(/#$/, '');
         if (!code || !state) {
             return res.status(400).send("Missing OAuth code or state parameter from Instagram.");
         }
@@ -167,7 +169,7 @@ export const handleInstagramCallback = async (req, res) => {
         if (userProfile?.org_id) {
             orgId = userProfile.org_id;
         }
-        const igRedirectUri = 'https://api.growcorebot.com/api/auth/instagram/callback';
+        const igRedirectUri = process.env.INSTAGRAM_REDIRECT_URI || 'https://api.growcorebot.com/api/auth/instagram/callback';
         const igAppId = '1040716822144110';
         const igAppSecret = process.env.INSTAGRAM_APP_SECRET;
 
@@ -181,7 +183,8 @@ export const handleInstagramCallback = async (req, res) => {
         formData.append('client_secret', igAppSecret);
         formData.append('grant_type', 'authorization_code');
         formData.append('redirect_uri', igRedirectUri);
-        formData.append('code', code);
+        // Line 184 Replace:
+    formData.append('code', cleanCode);
 
         const tokenRes = await fetch('https://api.instagram.com/oauth/access_token', {
             method: 'POST',
@@ -204,19 +207,16 @@ export const handleInstagramCallback = async (req, res) => {
         const permanentToken = longLivedData.access_token || shortLivedToken;
 
         // 3. Auto-Subscribe Instagram Account to Webhooks
+       // 3. Auto-Subscribe Instagram Account to Webhooks (Production Standard)
         try {
-            const subRes = await fetch(`https://graph.instagram.com/v21.0/me/subscribed_apps`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    subscribed_fields: ['messages', 'messaging_postbacks'],
-                    access_token: permanentToken
-                })
+            const subscribeUrl = `https://graph.instagram.com/v21.0/me/subscribed_apps?subscribed_fields=messages,messaging_postbacks&access_token=${permanentToken}`;
+            const subRes = await fetch(subscribeUrl, {
+                method: 'POST'
             });
             const subData = await subRes.json();
-            console.log("[INSTAGRAM WEBHOOK AUTO-SUBSCRIBED]:", subData);
+            console.log("INSTAGRAM WEBHOOK AUTO-SUBSCRIBE RESULT:", subData);
         } catch (subErr) {
-            console.warn("[INSTAGRAM SUBSCRIBE WARNING]:", subErr.message);
+            console.warn("INSTAGRAM SUBSCRIBE WARNING!:", subErr.message);
         }
 
         // 4. Fetch Instagram Username
