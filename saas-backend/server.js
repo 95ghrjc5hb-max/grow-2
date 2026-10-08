@@ -35,6 +35,9 @@ const __dirname = path.dirname(__filename);
 // 1. SYSTEM INITIALIZATION
 // ==========================================
 const app = express();
+
+// [ENTERPRISE PROXY SETTING] Railway reverse proxy trust configuration
+app.set('trust proxy', 1);
 app.use((req, res, next) => {
   res.setHeader('ngrok-skip-browser-warning', 'true');
   next();
