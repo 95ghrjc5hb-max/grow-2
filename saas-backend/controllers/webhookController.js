@@ -548,25 +548,33 @@ console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 
         if (!senderId || (!customerMessage && !imageUrl)) continue;
 
         try {
-          const targetPlatform = body.object === 'page' ? 'messenger' : 'instagram';
-          
-          let { data: integration } = await supabase
-            .from('integrations')
-            .select('*')
-            .eq('page_id', pageId)
-            .eq('platform', targetPlatform)
-            .limit(1)
-            .maybeSingle();
+         // Line 550-570 er poriborte:
+const targetPlatform = body.object === 'page' ? 'messenger' : 'instagram';
+const lookupId = messagingEvent.recipient?.id || pageId;
 
-          if (!integration && body.object === 'instagram') {
-            const { data: fallbackInt } = await supabase
-              .from('integrations')
-              .select('*')
-              .eq('platform', 'instagram')
-              .limit(1)
-              .maybeSingle();
-            integration = fallbackInt;
-          }
+let { data: integration } = await supabase
+    .from('integrations')
+    .select('*')
+    .eq('page_id', lookupId)
+    .eq('platform', targetPlatform)
+    .limit(1)
+    .maybeSingle();
+
+// Jodi recipient.id diye na pay, entry.id diye check
+if (!integration) {
+    const { data: fallbackByEntry } = await supabase
+        .from('integrations')
+        .select('*')
+        .eq('page_id', pageId)
+        .limit(1)
+        .maybeSingle();
+    integration = fallbackByEntry;
+}
+
+if (!integration) {
+    console.warn(`[WEBHOOK DROPPED] No integration found for ID: ${lookupId}`);
+    continue;
+}
 
           if (!integration) continue;
 
