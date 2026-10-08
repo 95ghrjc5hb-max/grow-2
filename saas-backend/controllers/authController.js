@@ -169,10 +169,9 @@ export const handleInstagramCallback = async (req, res) => {
         if (userProfile?.org_id) {
             orgId = userProfile.org_id;
         }
-        const igRedirectUri = process.env.INSTAGRAM_REDIRECT_URI || 'https://api.growcorebot.com/api/auth/instagram/callback';
-        const igAppId = '1040716822144110';
+       const igRedirectUri = process.env.INSTAGRAM_REDIRECT_URI || 'https://api.growcorebot.com/api/auth/instagram/callback';
+        const igAppId = process.env.INSTAGRAM_APP_ID; // ✅ এখন এটি ডায়নামিক
         const igAppSecret = process.env.INSTAGRAM_APP_SECRET;
-
         if (!igAppSecret) {
             throw new Error("INSTAGRAM_APP_SECRET is not configured in server environment.");
         }
