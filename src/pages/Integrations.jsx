@@ -113,21 +113,32 @@ const handleWhatsApp1Click = () => {
       return;
     }
 
-    window.FB.login(
-      (response) => {
-        if (response.authResponse) {
-          const tokenOrCode = response.authResponse.accessToken || response.authResponse.code;
-          handleWhatsAppCodeExchange(tokenOrCode);
-        } else {
-          console.log("[WHATSAPP CANCELLED]: User cancelled the onboarding.");
-        }
-      },
-      {
-        scope: "whatsapp_business_management,whatsapp_business_messaging",
-        return_scopes: true
-      }
-    );
-  };
+   const waConfigId = import.meta.env.VITE_META_WA_CONFIG_ID;
+
+if (!waConfigId) {
+  console.error("Meta WhatsApp Config ID is missing from environment variables.");
+  return;
+}
+
+window.FB.login(
+  (response) => {
+    if (response.authResponse?.code) {
+      handleWhatsAppCodeExchange(response.authResponse.code);
+    } else {
+      console.warn("WhatsApp Embedded Signup cancelled or failed:", response);
+    }
+  },
+  {
+    config_id: waConfigId,
+    response_type: 'code',
+    override_default_response_type: true,
+    extras: {
+      feature: 'whatsapp_embedded_signup',
+      sessionInfoVersion: '3'
+    }
+  }
+);
+};
 
 // Backend Exchange for WhatsApp Credentials
 const handleWhatsAppCodeExchange = async (code) => {
