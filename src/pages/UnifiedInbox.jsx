@@ -317,11 +317,11 @@ export default function UnifiedInbox() {
             <div className="relative mb-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search conversations..."
-                className="pl-9 bg-white/5 border-white/10 text-sm focus-visible:ring-teal-500"
-              />
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search conversations..."
+              className="pl-9 bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base md:text-sm"
+            />
             </div>
             <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none">
               {channelFilters.map((f) => (
@@ -380,37 +380,53 @@ export default function UnifiedInbox() {
             )}
           </div>
         </div>
-
         {/* Middle Column: Chat Window */}
-        <div className={`flex-1 flex flex-col bg-[hsl(220,18%,7%)] ${selectedConv ? "flex" : "hidden md:flex"}`}>
-          {selectedConv ? (
+      <div className={`flex-1 flex flex-col bg-[hsl(220,18%,7%)] h-full overflow-hidden ${selectedConv ? "flex" : "hidden md:flex"}`}>
+       {selectedConv ? (
             <>
-              <div className="p-4 border-b border-white/10 flex items-center justify-between bg-[hsl(220,18%,9%)]">
-                <div className="flex items-center gap-2">
+             {/* Pinned Chat Header with Pause Button */}
+        <div className="p-3 md:p-4 border-b border-white/10 flex items-center justify-between bg-[hsl(220,18%,8%)] shrink-0 sticky top-0 z-10 gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <button
               onClick={() => setSelectedConv(null)}
-              className="md:hidden -ml-1 mr-1 p-1 text-slate-400 hover:text-white"
+              className="md:hidden -ml-1 p-1 text-slate-400 hover:text-white shrink-0"
               title="Back"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-                  <ChannelIcon channel={selectedConv.channel} size="md" />
-                  <div>
-                    <p className="font-semibold text-white">{selectedConv.customer_name}</p>
-                    <p className="text-xs text-slate-400">via {selectedConv.channel}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`text-xs px-2.5 py-1 rounded-full font-medium ${selectedConv.ai_active
-                      ? "bg-teal-500/10 text-teal-400 border border-teal-500/20"
-                      : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                      }`}
-                  >
-                    {selectedConv.ai_active ? "AI Active" : "Human Mode"}
-                  </span>
-                </div>
-              </div>
+            <ChannelIcon channel={selectedConv.channel} size="md" />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-white text-sm md:text-base truncate">{selectedConv.customer_name}</p>
+              <p className="text-xs text-slate-400 truncate">via {selectedConv.channel}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={`text-xs px-2 py-0.5 md:px-2.5 md:py-1 rounded-full font-medium ${
+                selectedConv.ai_active
+                  ? "bg-teal-500/10 text-teal-400 border border-teal-500/20"
+                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+              }`}
+            >
+              {selectedConv.ai_active ? "AI Active" : "Human"}
+            </span>
+
+            <Button
+              onClick={toggleAI}
+              size="sm"
+              variant="outline"
+              className={`h-7 px-2 text-xs gap-1 border shrink-0 ${
+                selectedConv.ai_active
+                  ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+                  : "border-teal-500/30 text-teal-400 hover:bg-teal-500/10 hover:text-teal-300"
+              }`}
+            >
+              {selectedConv.ai_active ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+              <span>{selectedConv.ai_active ? "Pause" : "Resume"}</span>
+            </Button>
+          </div>
+        </div>
 
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
                 {!selectedConv.messages || selectedConv.messages.length === 0 ? (
@@ -444,13 +460,13 @@ export default function UnifiedInbox() {
               <div className="p-4 border-t border-white/10 bg-[hsl(220,18%,9%)]">
                 <div className="flex gap-2">
                   <Input
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                    placeholder="Type a reply..."
-                    disabled={sending}
-                    className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500"
-                  />
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSend()}
+              placeholder="Type a reply..."
+              disabled={sending}
+              className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base md:text-sm"
+            />
                   <Button
                     onClick={handleSend}
                     disabled={sending || !newMessage.trim()}
