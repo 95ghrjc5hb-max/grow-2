@@ -35,8 +35,8 @@ export default function ProductTable({ search, setSearch, products, onEdit, onDe
       </div>
 
       {/* Table */}
-      <div className="rounded-xl border border-border overflow-hidden">
-        <table className="w-full">
+      <div className="rounded-xl border border-border overflow-x-auto">
+        <table className="w-full min-w-[600px]">
           <thead>
             <tr className="bg-white/[0.02] border-b border-border">
               <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Product</th>

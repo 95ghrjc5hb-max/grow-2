@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { MessageCircle, Instagram, Phone, Send, Pause, Play, User, Tag, Search, RefreshCw, ShoppingBag } from "lucide-react";
+import { MessageCircle, Instagram, Phone, Send, Pause, Play, User, Tag, Search, RefreshCw, ShoppingBag, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ChannelIcon from "@/components/shared/ChannelIcon";
@@ -300,7 +300,7 @@ export default function UnifiedInbox() {
     return (
       <div className="h-screen flex text-slate-200">
         {/* Left Column: Conversation List */}
-        <div className="w-80 border-r border-white/10 flex flex-col bg-[hsl(220,18%,9%)]">
+        <div className={`w-full md:w-80 border-r border-white/10 flex flex-col bg-[hsl(220,18%,9%)] shrink-0 ${selectedConv ? "hidden md:flex" : "flex"}`}>
           <div className="p-4 border-b border-white/10">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-white">Inbox</h2>
@@ -382,11 +382,18 @@ export default function UnifiedInbox() {
         </div>
 
         {/* Middle Column: Chat Window */}
-        <div className="flex-1 flex flex-col bg-[hsl(220,18%,7%)]">
+        <div className={`flex-1 flex flex-col bg-[hsl(220,18%,7%)] ${selectedConv ? "flex" : "hidden md:flex"}`}>
           {selectedConv ? (
             <>
               <div className="p-4 border-b border-white/10 flex items-center justify-between bg-[hsl(220,18%,9%)]">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSelectedConv(null)}
+              className="md:hidden -ml-1 mr-1 p-1 text-slate-400 hover:text-white"
+              title="Back"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
                   <ChannelIcon channel={selectedConv.channel} size="md" />
                   <div>
                     <p className="font-semibold text-white">{selectedConv.customer_name}</p>
@@ -466,7 +473,7 @@ export default function UnifiedInbox() {
         </div>
 
         {/* Right Column: Customer Profile */}
-        <div className="w-72 border-l border-white/10 bg-[hsl(220,18%,9%)] p-6">
+        <div className="hidden xl:block w-72 border-l border-white/10 bg-[hsl(220,18%,9%)] p-6 shrink-0 overflow-y-auto">
           {selectedConv ? (
             <div className="space-y-6">
               <div className="text-center">
