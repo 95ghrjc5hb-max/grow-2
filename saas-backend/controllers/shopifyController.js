@@ -185,11 +185,11 @@ console.log('[shopifyController] Access Token acquired successfully:', accessTok
       }
     }
 
-    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const frontendUrl = (process.env.FRONTEND_URL || 'https://growcorebot.com').replace(/\/$/, '');
     return res.redirect(`${frontendUrl}/integrations?shopify=success`);
   } catch (error) {
     console.error('[shopifyController] Callback Fatal Error:', error);
-    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const frontendUrl = (process.env.FRONTEND_URL || 'https://growcorebot.com').replace(/\/$/, '');
     return res.redirect(`${frontendUrl}/integrations?shopify=error`);
   }
 };
@@ -450,7 +450,7 @@ export const handleShopifyWebhook = async (req, res) => {
 export const handleShopifyBillingCallback = async (req, res) => {
   try {
     const { charge_id, workspace_id, plan } = req.query;
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const frontendUrl = (process.env.FRONTEND_URL || 'https://growcorebot.com').replace(/\/$/, '');
 
     console.log("👉 [Billing Callback Hit]:", { charge_id, workspace_id, plan });
 
@@ -495,7 +495,7 @@ export const handleShopifyBillingCallback = async (req, res) => {
     return res.redirect(`${frontendUrl}/settings?billing=success`);
   } catch (error) {
     console.error("❌ Callback Fatal Error:", error);
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const frontendUrl = (process.env.FRONTEND_URL || 'https://growcorebot.com').replace(/\/$/, '');
     return res.redirect(`${frontendUrl}/settings?billing=failed`);
   }
 };

@@ -26,9 +26,10 @@ export const createLemonSqueezyCheckout = async ({ variantId, workspaceId, userE
             }
           },
           product_options: {
-            redirect_url: 'http://localhost:5173/settings',
-            receipt_button_text: 'Go to Dashboard'
-          }
+              redirect_url: `${process.env.FRONTEND_URL || 'https://growcorebot.com'}/settings`,
+              receipt_button_text: 'Go to Dashboard'
+            },
+          
         },
         relationships: {
           store: {
