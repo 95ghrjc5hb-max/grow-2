@@ -459,13 +459,14 @@ export default function UnifiedInbox() {
 
               <div className="p-3 pb-6 md:pb-4 border-t border-white/10 bg-[hsl(220,18%,8%)] shrink-0">
                 <div className="flex gap-2">
-                  <Input
+              <Input
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSend()}
               placeholder="Type a reply..."
               disabled={sending}
-              className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base md:text-sm"
+              style={{ fontSize: "16px" }}
+              className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base"
             />
                   <Button
                     onClick={handleSend}
