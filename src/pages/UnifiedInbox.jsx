@@ -465,7 +465,7 @@ export default function UnifiedInbox() {
               onKeyDown={(e) => e.key === "Enter" && handleSend()}
               placeholder="Type a reply..."
               disabled={sending}
-              style={{ fontSize: "16px" }}
+              style={{ fontSize: "20px" }}
               className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base"
             />
                   <Button
