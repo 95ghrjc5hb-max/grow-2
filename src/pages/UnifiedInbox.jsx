@@ -381,7 +381,7 @@ export default function UnifiedInbox() {
           </div>
         </div>
         {/* Middle Column: Chat Window */}
-      <div className={`flex-1 flex flex-col bg-[hsl(220,18%,7%)] h-full overflow-hidden ${selectedConv ? "flex" : "hidden md:flex"}`}>
+      <div className={`flex-1 flex flex-col bg-[hsl(220,18%,7%)] overflow-hidden ${selectedConv ? "fixed inset-0 z-50 h-[100dvh] w-full flex md:static md:h-full md:z-auto" : "hidden md:flex md:h-full"}`}>
        {selectedConv ? (
             <>
              {/* Pinned Chat Header with Pause Button */}
@@ -457,7 +457,7 @@ export default function UnifiedInbox() {
                 <div ref={chatEndRef} />
               </div>
 
-              <div className="p-4 border-t border-white/10 bg-[hsl(220,18%,9%)]">
+              <div className="p-3 pb-6 md:pb-4 border-t border-white/10 bg-[hsl(220,18%,8%)] shrink-0">
                 <div className="flex gap-2">
                   <Input
               value={newMessage}
