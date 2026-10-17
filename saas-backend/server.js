@@ -26,6 +26,7 @@ import stripeRoutes from './routes/stripeRoutes.js';
 import { handleStripeWebhook } from './controllers/stripeController.js';
 import lemonSqueezyRoutes from './routes/lemonSqueezyRoutes.js';
 import shopifyRoutes from './routes/shopifyRoutes.js';
+import whatsappTemplateRoutes from './routes/whatsappTemplateRoutes.js';
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -415,6 +416,7 @@ app.use('/api/conversations', conversationRoutes);
 
 app.use('/api/auth', authRoutes);
 
+app.use('/api/v1/whatsapp/templates', whatsappTemplateRoutes);
 
 app.use('/api/v1/orders', orderRoutes);
 

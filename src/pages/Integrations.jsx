@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
-
+import WhatsAppTemplateModal from '../components/WhatsAppTemplateModal';
 const platforms = [
   {
     key: "messenger",
@@ -59,6 +59,7 @@ export default function Integrations() {
   const [loading, setLoading] = useState(false);
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [showShopifyModal, setShowShopifyModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState("");
   const { toast } = useToast();
 
@@ -396,6 +397,14 @@ const handleWhatsAppCodeExchange = async (code) => {
               >
                 {connected ? "Manage Integration" : <><ExternalLink className="w-4 h-4" /> Connect</>}
               </Button>
+              {connected && p.key === "whatsapp" && (
+    <Button
+        onClick={() => setShowTemplateModal(true)}
+        className="w-full mt-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-xs font-medium py-2 rounded-lg transition"
+    >
+        Manage Templates
+    </Button>
+)}
             </div>
           );
         })}
@@ -438,6 +447,10 @@ const handleWhatsAppCodeExchange = async (code) => {
           </form>
         </DialogContent>
       </Dialog>
+      <WhatsAppTemplateModal
+    isOpen={showTemplateModal}
+    onClose={() => setShowTemplateModal(false)}
+/>
     </div>
   );
 }
