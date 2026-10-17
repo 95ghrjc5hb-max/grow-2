@@ -2,7 +2,7 @@ import axios from 'axios';
 import { supabase } from '../config/supabase.js';
 
 class WhatsAppTemplateService {
-    // Dynamically resolves WABA ID and Access Token from the connected integration
+    // 100% Dynamic WABA resolution via Meta Graph API
     async getWabaCredentials(orgId) {
         const { data: integration, error } = await supabase
             .from('integrations')
@@ -11,25 +11,29 @@ class WhatsAppTemplateService {
             .eq('platform', 'whatsapp')
             .single();
 
-        if (error || !integration?.access_token || !integration?.page_id) {
+        if (error || !integration?.access_token) {
             throw new Error('Active WhatsApp integration not found for this workspace.');
         }
 
-        const phoneNumberId = integration.page_id;
         const accessToken = integration.access_token;
 
-        // Query Meta Graph API to resolve the parent WhatsApp Business Account (WABA) ID
-       const metaRes = await axios.get(
-            `https://graph.facebook.com/v21.0/${phoneNumberId}?fields=whatsapp_business_account`,
+        // Enterprise Dynamic Discovery: Query Meta for associated WABA accounts
+        const metaRes = await axios.get(
+            'https://graph.facebook.com/v21.0/me/whatsapp_business_accounts',
             {
-                headers: { Authorization: `Bearer ${accessToken}` }
+                headers: {
+                    Authorization: `Bearer ${accessToken}`
+                }
             }
         );
 
-        const wabaId = metaRes.data?.whatsapp_business_account?.id;
-        if (!wabaId) {
-            throw new Error('Failed to resolve WABA ID from Meta API.');
+        const wabaAccounts = metaRes.data?.data || [];
+        if (wabaAccounts.length === 0) {
+            throw new Error('No WhatsApp Business Account (WABA) associated with this access token.');
         }
+
+        // Dynamically select the primary connected WABA ID
+        const wabaId = wabaAccounts[0].id;
 
         return { wabaId, accessToken };
     }
@@ -41,16 +45,17 @@ class WhatsAppTemplateService {
         // Sanitize template name: Meta requires lowercase, numbers, and underscores only
         const sanitizedName = name.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
-        // Meta requires an 'example' parameter if positional parameters (e.g. {{1}}, {{2}}) are present
-        const hasVariables = /\{\{\d+\}\}/.test(bodyText);
+        // Dynamically build sample variables for Meta template compliance
+        const variableMatches = bodyText.match(/\{\{\d+\}\}/g) || [];
         const bodyComponent = {
             type: 'BODY',
             text: bodyText
         };
 
-        if (hasVariables) {
+        if (variableMatches.length > 0) {
+            const sampleValues = variableMatches.map((_, idx) => `Sample ${idx + 1}`);
             bodyComponent.example = {
-                body_text: [['Customer Name', '1024']]
+                body_text: [sampleValues]
             };
         }
 
