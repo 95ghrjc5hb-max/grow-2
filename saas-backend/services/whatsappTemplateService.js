@@ -2,7 +2,6 @@ import axios from 'axios';
 import { supabase } from '../config/supabase.js';
 
 class WhatsAppTemplateService {
-    // 100% Dynamic WABA resolution via Meta Graph API
     async getWabaCredentials(orgId) {
         const { data: integration, error } = await supabase
             .from('integrations')
@@ -15,37 +14,23 @@ class WhatsAppTemplateService {
             throw new Error('Active WhatsApp integration not found for this workspace.');
         }
 
-        const accessToken = integration.access_token;
-
-        // Enterprise Dynamic Discovery: Query Meta for associated WABA accounts
-        const metaRes = await axios.get(
-            'https://graph.facebook.com/v21.0/me/whatsapp_business_accounts',
-            {
-                headers: {
-                    Authorization: `Bearer ${accessToken}`
-                }
-            }
-        );
-
-        const wabaAccounts = metaRes.data?.data || [];
-        if (wabaAccounts.length === 0) {
-            throw new Error('No WhatsApp Business Account (WABA) associated with this access token.');
+       // Load dynamically from Railway / Environment Variables
+        const wabaId = process.env.META_WABA_ID;
+        if (!wabaId) {
+            throw new Error('META_WABA_ID is missing from environment variables.');
         }
 
-        // Dynamically select the primary connected WABA ID
-        const wabaId = wabaAccounts[0].id;
-
+        const accessToken = integration.access_token;
         return { wabaId, accessToken };
     }
 
-    // Creates a new WhatsApp Message Template on Meta
     async createTemplate(orgId, { name, category = 'UTILITY', language = 'en_US', bodyText }) {
         const { wabaId, accessToken } = await this.getWabaCredentials(orgId);
 
-        // Sanitize template name: Meta requires lowercase, numbers, and underscores only
+        // Meta template name requirements: lowercase letters, numbers, and underscores only
         const sanitizedName = name.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
-        // Dynamically build sample variables for Meta template compliance
+        // Dynamically extract variable placeholders e.g. {{1}}, {{2}}
         const variableMatches = bodyText.match(/\{\{\d+\}\}/g) || [];
         const bodyComponent = {
             type: 'BODY',
@@ -80,7 +65,6 @@ class WhatsAppTemplateService {
         return response.data;
     }
 
-    // Retrieves list of message templates directly from Meta
     async listTemplates(orgId) {
         const { wabaId, accessToken } = await this.getWabaCredentials(orgId);
 
