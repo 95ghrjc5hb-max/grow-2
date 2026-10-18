@@ -314,13 +314,13 @@ console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 
       });
     }
 
-            if (aiResponse && aiResponse.handover) {
-              await sendAlertToChannels(
+       if (aiResponse && aiResponse.handover) {
+            await sendAlertToChannels(
                 integration.org_id,
                 'notifyOnHandover',
-                `⚠️ *Human Handover Requested!*\nCustomer Phone: ${customerPhone} needs human assistance.`
-              );
-            }
+                `🚨 *Human Assistance Requested!*\n*Platform:* WhatsApp\n*Customer Phone:* ${customerPhone}\n*Last Message:* "${customerMessage}"\n\nPlease check the GROWCORE Unified Inbox to assist the customer.`
+            );
+        }
 
             const replyText = typeof aiResponse === 'string'
               ? aiResponse
@@ -649,13 +649,14 @@ if (!integration) {
         imageUrl
       });
     }
-          if (aiResponse && aiResponse.handover) {
+         if (aiResponse && aiResponse.handover) {
+            const platformName = integration.platform === 'messenger' ? 'MESSENGER' : 'INSTAGRAM';
             await sendAlertToChannels(
-              integration.org_id,
-              'notifyOnHandover',
-              `⚠️ *Human Handover Requested!*\nCustomer (${targetPlatform}): ${customerMessage}`
+                integration.org_id,
+                'notifyOnHandover',
+                `🚨 *Human Assistance Requested!*\n*Platform:* ${platformName}\n*Customer ID:* ${senderId}\n*Last Message:* "${customerMessage}"\n\nPlease check the GROWCORE Unified Inbox to assist the customer.`
             );
-          }
+        }
          
           let replyText = typeof aiResponse === 'string'
             ? aiResponse

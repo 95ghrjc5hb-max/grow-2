@@ -40,7 +40,7 @@ export default function ProductTable({ search, setSearch, products, onEdit, onDe
           <thead>
             <tr className="bg-white/[0.02] border-b border-border">
               <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Product</th>
-              <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Price (BDT)</th>
+              <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Price</th>
               <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Stock</th>
               <th className="text-left p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Description</th>
               <th className="text-right p-4 text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>

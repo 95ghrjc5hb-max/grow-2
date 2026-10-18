@@ -113,13 +113,7 @@ export const handleCustomerMessage = async ({
     }
 
     const escalationContact = botConfig?.support_contact?.trim() || 'our support team';
-    customSystemPrompt += `\n\n[GLOBAL ESCALATION PROTOCOL]
-    - NEVER prematurely give out the support contact for simple inquiries, greetings, typos, or general store browsing.
-    - ONLY provide the escalation contact ("${escalationContact}") and set "handover": true if:
-      1. The customer explicitly asks to talk with a human, owner, or support agent.
-      2. The query is completely unresolved after 3+ consecutive failed attempts.
-      3. The customer reports a severe issue (order dispute, payment failure, refund).`;
-
+    
     const rawMsg = customerMessage || '';
     const isImageOnly = rawMsg.includes('[Customer sent an image]') || rawMsg.trim() === '';
     const cleanMsg = isImageOnly ? '' : rawMsg.replace('[Customer sent an image]', '').trim();
@@ -222,12 +216,11 @@ const img = mainImg ? ` | Image: ${mainImg}` : '';
 
     // Fixed shipping rules string interpolation
     const shippingRulePrompt = deliveryRules
-      .map(r => `• \({r.zone || r.name || 'Standard'}:\){currency}\({r.fee ?? r.amount ?? 0} (\){r.payment_type || r.condition || 'Standard'})`)
+      .map(r => `• ${r.zone || r.name || 'Standard'}: ${currency}${r.fee ?? r.amount ?? 0} (${r.payment_type || r.condition || 'Standard'})`)
       .join('\n');
 
     // Fixed dynamic schema string
-    const dynamicSchemaStr = activeFields.map(f => `"\({f.id}": "extracted\){f.label} or null"`).join(',\n    ');
-
+    const dynamicSchemaStr = activeFields.map(f => `"${f.id}": "extracted ${f.label} or null"`).join(',\n    ');
     const fullSystemPrompt = `${UNIVERSAL_MASTER_RULE}
 
 Store Personality & Role:
@@ -269,6 +262,20 @@ ${dynamicBulletTemplate}
    - Step 1: Once all checkout details are collected, present a clean Order Summary to the customer and ask for their final confirmation (e.g., "Please reply YES/Confirm to place your order").
    - Step 2: Keep "orderData": null until the customer explicitly confirms.
    - Once confirmed, output the complete "orderData" JSON object.
+
+   6. ANTI-HALLUCINATION & HUMAN HANDOFF PROTOCOL:
+     - ZERO HALLUCINATION: If the user asks about a product NOT explicitly listed in the inventory, you MUST NOT invent or guess details.
+     - POLITE OFFER: Instead, apologize politely and ASK: "I couldn't find exact details for that in our current inventory. Would you like me to notify our human support team to assist you?" (DO NOT set "handover": true yet).
+     - STRICT ESCALATION RULES: NEVER prematurely give out the support contact for simple inquiries, greetings, typos, or general store browsing.
+     - PROVIDING CONTACT INFO: ONLY provide the escalation contact ("${escalationContact}") if the customer explicitly asks for a phone number, email, page link, or direct contact details.
+     - SEVERE ISSUES & REPEATED FAILURES: If the user reports a severe issue (order dispute, payment failure, refund), uses abusive language, or if a query is completely unresolved after 3+ consecutive failed attempts, politely calm them down and ASK if they want to speak to a human.
+     - DE-ESCALATION: If the user declines the human agent offer (e.g., "No", "Nevermind", "Don't call them"), politely acknowledge and seamlessly return to assisting them with AI.
+     - THE NOTIFICATION TRIGGER: IF AND ONLY IF the user explicitly confirms (e.g., says "Yes", "Talk to agent", "Notify them"), YOU MUST set "handover": true in your JSON response and set your "reply" to: "I have notified our human support team. An agent will join this chat as soon as they are available. You can also reach us directly at: ${escalationContact}. In the meantime, is there anything else I can help you with?"
+     - DO NOT STOP CHATTING: You must continue to reply politely if the user asks further questions while waiting for the human agent.
+
+  7. SPAM, TOXICITY & PRIVACY (GDPR) DEFENSE:
+     - ABUSE DISENGAGEMENT: If a user continuously spams, harasses, or uses severe profanity even after being offered human support, professionally disengage (e.g., "I will be pausing this chat for now. Please contact ${escalationContact} for further assistance.") and set "handover": true to alert the admin of the abuse.
+     - DATA PRIVACY: If a user asks to delete their data, unsubscribe, or asks GDPR-related privacy questions, DO NOT hallucinate policies. Direct them to contact ${escalationContact}.
 
 [RESPONSE FORMAT - STRICT JSON]
 Respond ONLY with valid JSON in this exact schema:

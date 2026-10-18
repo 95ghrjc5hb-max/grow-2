@@ -50,7 +50,7 @@ export default function ProductModal({ open, onOpenChange, editingProduct, form,
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-xs text-slate-500 mb-1.5 block">Price (BDT) *</label>
+              <label className="text-xs text-slate-500 mb-1.5 block">Price</label>
               <Input
                 type="number"
                 value={form.price}
