@@ -526,32 +526,65 @@ async function disconnectIntegration(workspaceId, provider) {
 // ---------------------------------------------------------------------------
 
 async function getNotificationSettings(workspaceId) {
-  const { data, error } = await supabase
-    .from("notification_settings")
-    .select("slack, discord")
-    .eq("workspace_id", workspaceId)
-    .maybeSingle(); // FIXED: Changed to maybeSingle
+    const { data, error } = await supabase
+        .from("notification_settings")
+        .select("slack, discord")
+        .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+        .maybeSingle();
 
-  assertNoError(error, "Failed to load notification settings");
+    assertNoError(error, "Failed to load notification settings");
 
-  const defaults = { webhookUrl: "", notifyOnHandover: false, notifyOnOrderUpdate: false };
-  return {
-    slack: { ...defaults, ...(data?.slack ?? {}) },
-    discord: { ...defaults, ...(data?.discord ?? {}) },
-  };
+    const defaults = { webhookUrl: "", notifyOnHandover: false, notifyOnOrderStatus: false };
+    return {
+        slack: { ...defaults, ...(data?.slack ?? {}) },
+        discord: { ...defaults, ...(data?.discord ?? {}) },
+    };
 }
 
 async function updateNotificationSettings(workspaceId, payload) {
-  const { data, error } = await supabase
-    .from("notification_settings")
-    .upsert({ workspace_id: workspaceId, slack: payload.slack, discord: payload.discord }) // FIXED: Added upsert
-    .select("slack, discord")
-    .maybeSingle();
+    // 1. Check if record already exists for this tenant
+    const { data: existing, error: checkError } = await supabase
+        .from("notification_settings")
+        .select("id")
+        .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+        .maybeSingle();
 
-  assertNoError(error, "Failed to update notification settings");
-  return { slack: data?.slack || payload.slack, discord: data?.discord || payload.discord };
+    assertNoError(checkError, "Failed to check existing notification settings");
+
+    let result;
+    if (existing?.id) {
+        // 2. Update existing row safely by ID
+        result = await supabase
+            .from("notification_settings")
+            .update({
+                org_id: workspaceId,
+                workspace_id: workspaceId,
+                slack: payload.slack || {},
+                discord: payload.discord || {}
+            })
+            .eq("id", existing.id)
+            .select("slack, discord")
+            .maybeSingle();
+    } else {
+        // 3. Insert new row if table is empty
+        result = await supabase
+            .from("notification_settings")
+            .insert({
+                org_id: workspaceId,
+                workspace_id: workspaceId,
+                slack: payload.slack || {},
+                discord: payload.discord || {}
+            })
+            .select("slack, discord")
+            .maybeSingle();
+    }
+
+    assertNoError(result.error, "Failed to update notification settings");
+    return { 
+        slack: result.data?.slack || payload.slack, 
+        discord: result.data?.discord || payload.discord 
+    };
 }
-
 async function sendTestWebhook(workspaceId, channel) {
   const settingsRow = await getNotificationSettings(workspaceId);
   const url = settingsRow[channel]?.webhookUrl;
