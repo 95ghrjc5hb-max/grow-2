@@ -525,11 +525,28 @@ async function disconnectIntegration(workspaceId, provider) {
 // Notifications
 // ---------------------------------------------------------------------------
 
+// // Notifications
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+async function resolveTenantOrgId(workspaceId) {
+    if (!workspaceId) return null;
+    // Check if workspaceId is already a valid org_id or if it is a user_id
+    const { data: member } = await supabase
+        .from("organization_members")
+        .select("org_id")
+        .or(`org_id.eq.${workspaceId},user_id.eq.${workspaceId}`)
+        .maybeSingle();
+
+    return member?.org_id || workspaceId;
+}
+
 async function getNotificationSettings(workspaceId) {
+    const targetId = await resolveTenantOrgId(workspaceId);
+
     const { data, error } = await supabase
         .from("notification_settings")
         .select("slack, discord")
-        .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+        .or(`org_id.eq.${targetId},workspace_id.eq.${targetId},org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
         .maybeSingle();
 
     assertNoError(error, "Failed to load notification settings");
@@ -542,23 +559,23 @@ async function getNotificationSettings(workspaceId) {
 }
 
 async function updateNotificationSettings(workspaceId, payload) {
-    // 1. Check if record already exists for this tenant
+    const targetId = await resolveTenantOrgId(workspaceId);
+
     const { data: existing, error: checkError } = await supabase
         .from("notification_settings")
         .select("id")
-        .or(`org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+        .or(`org_id.eq.${targetId},workspace_id.eq.${targetId},org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
         .maybeSingle();
 
     assertNoError(checkError, "Failed to check existing notification settings");
 
     let result;
     if (existing?.id) {
-        // 2. Update existing row safely by ID
         result = await supabase
             .from("notification_settings")
             .update({
-                org_id: workspaceId,
-                workspace_id: workspaceId,
+                org_id: targetId,
+                workspace_id: targetId,
                 slack: payload.slack || {},
                 discord: payload.discord || {}
             })
@@ -566,12 +583,11 @@ async function updateNotificationSettings(workspaceId, payload) {
             .select("slack, discord")
             .maybeSingle();
     } else {
-        // 3. Insert new row if table is empty
         result = await supabase
             .from("notification_settings")
             .insert({
-                org_id: workspaceId,
-                workspace_id: workspaceId,
+                org_id: targetId,
+                workspace_id: targetId,
                 slack: payload.slack || {},
                 discord: payload.discord || {}
             })
@@ -585,6 +601,8 @@ async function updateNotificationSettings(workspaceId, payload) {
         discord: result.data?.discord || payload.discord 
     };
 }
+       
+
 async function sendTestWebhook(workspaceId, channel) {
   const settingsRow = await getNotificationSettings(workspaceId);
   const url = settingsRow[channel]?.webhookUrl;
