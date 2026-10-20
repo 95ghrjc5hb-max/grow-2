@@ -2,7 +2,7 @@
 
 client_id = "c709f2e5a7caf3ee3c43d66deaedaebf"
 name = "grow-thame-app"
-application_url = "https://unloving-unnamed-flight.ngrok-free.dev"
+application_url = "https://api.growcorebot.com"
 embedded = false
 
 [build]
@@ -21,12 +21,11 @@ scopes = "read_orders,read_products,write_orders,write_products"
 
 [auth]
 redirect_urls = [
-  "https://unloving-unnamed-flight.ngrok-free.dev/api/shopify/auth",
-  "https://unloving-unnamed-flight.ngrok-free.dev/api/shopify/callback",
-  "https://unloving-unnamed-flight.ngrok-free.dev/api/shopify/billing/callback",
-  "https://unloving-unnamed-flight.ngrok-free.dev/api/v1/shopify/auth",
-  "https://unloving-unnamed-flight.ngrok-free.dev/api/v1/shopify/callback",
-  "https://unloving-unnamed-flight.ngrok-free.dev/api/v1/shopify/billing/callback"
+  "https://api.growcorebot.com/api/shopify/auth",
+  "https://api.growcorebot.com/api/shopify/callback",
+  "https://api.growcorebot.com/api/v1/shopify/auth",
+  "https://api.growcorebot.com/api/v1/shopify/callback",
+  "https://api.growcorebot.com/api/v1/shopify/billing/callback",
 ]
 [metaobjects.app.faq]
 name = "FAQ"
