@@ -528,12 +528,14 @@ async function disconnectIntegration(workspaceId, provider) {
 // // Notifications
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+// --- ENTERPRISE TENANT RESOLUTION HELPER ---
 async function resolveTenantOrgId(workspaceId) {
     if (!workspaceId) return null;
-    // Check if workspaceId is already a valid org_id or if it is a user_id
+
+    // Direct organization members lookup to map user_id -> tenant org_id
     const { data: member } = await supabase
-        .from("organization_members")
-        .select("org_id")
+        .from('organization_members')
+        .select('org_id')
         .or(`org_id.eq.${workspaceId},user_id.eq.${workspaceId}`)
         .maybeSingle();
 
@@ -542,11 +544,12 @@ async function resolveTenantOrgId(workspaceId) {
 
 async function getNotificationSettings(workspaceId) {
     const targetId = await resolveTenantOrgId(workspaceId);
+    if (!targetId) return null;
 
     const { data, error } = await supabase
         .from("notification_settings")
         .select("slack, discord")
-        .or(`org_id.eq.${targetId},workspace_id.eq.${targetId},org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+        .or(`org_id.eq.${targetId},workspace_id.eq.${targetId}`)
         .maybeSingle();
 
     assertNoError(error, "Failed to load notification settings");
@@ -560,11 +563,13 @@ async function getNotificationSettings(workspaceId) {
 
 async function updateNotificationSettings(workspaceId, payload) {
     const targetId = await resolveTenantOrgId(workspaceId);
+    if (!targetId) throw new ValidationError("Tenant Organization ID could not be resolved.");
 
+    // Inspect existing row for this exact Tenant Org
     const { data: existing, error: checkError } = await supabase
         .from("notification_settings")
         .select("id")
-        .or(`org_id.eq.${targetId},workspace_id.eq.${targetId},org_id.eq.${workspaceId},workspace_id.eq.${workspaceId}`)
+        .or(`org_id.eq.${targetId},workspace_id.eq.${targetId}`)
         .maybeSingle();
 
     assertNoError(checkError, "Failed to check existing notification settings");
@@ -592,13 +597,13 @@ async function updateNotificationSettings(workspaceId, payload) {
                 discord: payload.discord || {}
             })
             .select("slack, discord")
-            .maybeSingle();
+            .single();
     }
 
     assertNoError(result.error, "Failed to update notification settings");
-    return { 
-        slack: result.data?.slack || payload.slack, 
-        discord: result.data?.discord || payload.discord 
+    return {
+        slack: result.data?.slack || payload.slack,
+        discord: result.data?.discord || payload.discord
     };
 }
        
