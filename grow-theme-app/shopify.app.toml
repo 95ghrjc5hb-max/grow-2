@@ -25,8 +25,9 @@ redirect_urls = [
   "https://api.growcorebot.com/api/shopify/callback",
   "https://api.growcorebot.com/api/v1/shopify/auth",
   "https://api.growcorebot.com/api/v1/shopify/callback",
-  "https://api.growcorebot.com/api/v1/shopify/billing/callback",
+  "https://api.growcorebot.com/api/v1/shopify/billing/callback"
 ]
+
 [metaobjects.app.faq]
 name = "FAQ"
 
