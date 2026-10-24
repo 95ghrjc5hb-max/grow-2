@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase.js';
@@ -11,25 +12,25 @@ export const beginShopifyAuth = async (req, res) => {
     const shop = req.query.shop;
     const token = req.query.token || (req.headers.authorization ? req.headers.authorization.split(' ')[1] : null);
 
-    if (!shop || !token) {
-      return res.status(400).json({ success: false, error: 'Shop domain and user token are required' });
+    // Shopify Review bot token chara ashe, tai sudhu shop domain check hobe
+    if (!shop) {
+      return res.status(400).json({ success: false, error: 'Shop domain is required' });
     }
 
-    // Sanitize shop domain properly
     let cleanShop = shop.replace(/^https?:\/\//, '').replace(/\/$/, '').trim().toLowerCase();
     if (!cleanShop.includes('.myshopify.com')) {
-      cleanShop = `${cleanShop}.myshopify.com`;
+      cleanShop = cleanShop + '.myshopify.com';
     }
 
-    // In beginShopifyAuth:
     const scopes = process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_orders,write_orders';
     const backendUrl = (process.env.BACKEND_URL || 'https://api.growcorebot.com').replace(/\/$/, '');
-    const redirectUri = `${backendUrl}/api/v1/shopify/callback`;
+    const redirectUri = backendUrl + '/api/v1/shopify/callback';
     const clientId = process.env.SHOPIFY_CLIENT_ID || process.env.SHOPIFY_API_KEY;
 
-    // Pass user token in state
-    const state = token;
-    const installUrl = `https://${cleanShop}/admin/oauth/authorize?client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}&grant_options[]=per-user`;
+    // Token thakle state-e jabe, na thakle safe fallback state
+    const state = token ? token : Buffer.from(JSON.stringify({ shop: cleanShop, isShopifyBot: true })).toString('base64');
+
+    const installUrl = 'https://' + cleanShop + '/admin/oauth/authorize?client_id=' + clientId + '&scope=' + encodeURIComponent(scopes) + '&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
 
     return res.redirect(installUrl);
   } catch (error) {
@@ -49,27 +50,36 @@ export const handleShopifyCallback = async (req, res) => {
 
     const cleanShopDomain = shop.replace(/^https?:\/\//, '').replace(/\/$/, '').trim().toLowerCase();
 
-    // Step A: Extract authenticated user from state token
-    let userId;
+    // REPLACE LINE 52 TO 71 WITH THIS:
+    // Step A: Extract authenticated user from state token safely
+    let userId = null;
+    let targetOrgId = null;
+
     try {
-      const base64Url = state.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      const decodedPayload = JSON.parse(Buffer.from(base64, 'base64').toString());
-      userId = decodedPayload.sub || decodedPayload.user_id || decodedPayload.id;
-      if (!userId) throw new Error('Could not resolve user identity from state');
+      if (state && state.includes('.')) {
+        const base64Url = state.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const decodedPayload = JSON.parse(Buffer.from(base64, 'base64').toString());
+        userId = decodedPayload.sub || decodedPayload.user_id || decodedPayload.id;
+      }
     } catch (err) {
-      console.error('[shopifyController] State token decode error:', err.message);
-      return res.status(401).send('Invalid user identity state');
+      console.warn('[shopifyController] State decoding bypassed for Shopify Bot:', err.message);
     }
 
-    // Step B: Resolve the user's primary organization ID
-    const { data: memberRecord } = await supabase
-      .from('organization_members')
-      .select('org_id')
-      .eq('user_id', userId)
-      .maybeSingle();
+    // Step B: Resolve organization ID or fallback for Shopify Review bot
+    if (userId) {
+      const { data: memberRecord } = await supabase
+        .from('organization_members')
+        .select('org_id')
+        .eq('user_id', userId)
+        .maybeSingle();
 
-    const targetOrgId = memberRecord?.org_id || userId;
+      targetOrgId = memberRecord?.org_id || userId;
+    } else {
+      targetOrgId = cleanShopDomain;
+    }
+
+  
 // Step C: Exchange code with Shopify for access token
     const clientId = process.env.SHOPIFY_CLIENT_ID || process.env.SHOPIFY_API_KEY;
     const clientSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET;
@@ -185,12 +195,15 @@ console.log('[shopifyController] Access Token acquired successfully:', accessTok
       }
     }
 
-    const frontendUrl = (process.env.FRONTEND_URL || 'https://growcorebot.com').replace(/\/$/, '');
-    return res.redirect(`${frontendUrl}/integrations?shopify=success`);
+   const host = req.query.host;
+    const sanitizedHost = host || Buffer.from(cleanShopDomain + '/admin').toString('base64');
+    const appClientId = process.env.SHOPIFY_CLIENT_ID || process.env.SHOPIFY_API_KEY;
+    const shopifyAdminUrl = 'https://' + cleanShopDomain + '/admin/apps/' + appClientId + '?host=' + sanitizedHost;
+
+    return res.redirect(shopifyAdminUrl);
   } catch (error) {
     console.error('[shopifyController] Callback Fatal Error:', error);
-    const frontendUrl = (process.env.FRONTEND_URL || 'https://growcorebot.com').replace(/\/$/, '');
-    return res.redirect(`${frontendUrl}/integrations?shopify=error`);
+    return res.status(500).send('OAuth callback processing failed: ' + error.message);
   }
 };
 
@@ -390,9 +403,30 @@ export const handleStorefrontChat = async (req, res) => {
 // =========================================================================
 // 4. SHOPIFY WEBHOOK RECEIVER (REAL-TIME AUTO SYNC)
 // =========================================================================
+// 4. SHOPIFY WEBHOOK RECEIVER (REAL-TIME AUTO SYNC)
 export const handleShopifyWebhook = async (req, res) => {
-    // 1. Send 200 OK immediately to prevent Shopify from timing out
-    res.status(200).send('Webhook Received');
+  // 1. Strict Shopify HMAC Signature Verification
+  const hmacHeader = req.headers['x-shopify-hmac-sha256'];
+  const secret = process.env.SHOPIFY_API_SECRET || process.env.SHOPIFY_CLIENT_SECRET;
+
+  if (!hmacHeader || !secret) {
+    return res.status(401).send('Missing HMAC signature or secret');
+  }
+
+  // Calculate HMAC using rawBody captured in server.js
+  const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(req.body);
+  const generatedHash = crypto
+    .createHmac('sha256', secret)
+    .update(rawBody, 'utf8')
+    .digest('base64');
+
+  if (generatedHash !== hmacHeader) {
+    console.warn('[Webhook] HMAC verification failed: invalid signature');
+    return res.status(401).send('HMAC signature mismatch');
+  }
+
+  // Signature valid hole instant 200 return hobe
+  res.status(200).send('Webhook Verified & Received');
 
     try {
         const topic = req.headers['x-shopify-topic'];

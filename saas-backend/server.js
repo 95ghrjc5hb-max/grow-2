@@ -428,7 +428,7 @@ app.use('/api/v1/webhooks', webhookRoutes);
 
 app.use('/api/v1/products', productRoutes);
 // Serve static assets if in production
-app.use(express.static(path.join(__dirname, '../dist')));
+
 
 
 app.use('/api/widget', express.static(path.join(__dirname, 'public/widget')));
@@ -445,11 +445,40 @@ app.use('/api/v1/stripe', stripeRoutes);
 
 app.use('/api/v1/shopify', shopifyRoutes);
 // Any request that doesn't match the API routes will load the frontend
-app.get(/(.*)/, (req, res) => {
-  if (req.path.startsWith('/api')) {
-    return res.status(404).json({ success: false, error: "API route not found" });
+// 1. Root Route: Shopify Health Check & Auto-Redirect
+app.get('/', (req, res) => {
+  const { shop, host } = req.query;
+
+  // Shopify jokhon installation-er jonno hit korbe (?shop=store.myshopify.com)
+  if (shop) {
+    let redirectUrl = '/api/shopify/auth?shop=' + encodeURIComponent(shop);
+    if (host) {
+      redirectUrl += '&host=' + encodeURIComponent(host);
+    }
+    return res.redirect(redirectUrl);
   }
-  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
+
+  // Shopify Reviewer Bot er jonno mandatory HTTP 200 Response
+  return res.status(200).json({
+    status: 'online',
+    service: 'GrowCoreBot API',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 2. Prevent ENOENT 404 error logs
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+app.get('/robots.txt', (req, res) => res.status(200).send('User-agent: *\nDisallow: /'));
+app.get('/sitemap.xml', (req, res) => res.status(204).end());
+
+// 3. Safe 404 JSON Handler (Kokhono dist/index.html call korbe na)
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'API endpoint not found',
+    path: req.originalUrl
+  });
 });
 
 // ==========================================
