@@ -473,7 +473,7 @@ app.get('/robots.txt', (req, res) => res.status(200).send('User-agent: *\nDisall
 app.get('/sitemap.xml', (req, res) => res.status(204).end());
 
 // 3. Safe 404 JSON Handler (Kokhono dist/index.html call korbe na)
-app.use('*', (req, res) => {
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     error: 'API endpoint not found',
