@@ -11,6 +11,10 @@ automatically_update_urls_on_dev = true
 [webhooks]
 api_version = "2026-07"
 
+[[webhooks.subscriptions]]
+uri = "https://api.growcorebot.com/api/v1/shopify/webhook"
+compliance_topics = [ "customers/redact", "customers/data_request", "shop/redact" ]
+
 [access.admin]
 direct_api_mode = "offline"
 embedded_app_direct_api_access = false
