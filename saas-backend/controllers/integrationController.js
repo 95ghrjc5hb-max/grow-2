@@ -68,16 +68,18 @@ export const connectWhatsAppOAuth = async (req, res) => {
     let userAccessToken = code;
 
     // If code is an authorization code (not a direct access token), exchange it
-    if (!code.startsWith('EAA')) {
+        if (!code.startsWith("EA")) {
       const tokenResponse = await axios.get(`${GRAPH_API_URL}/oauth/access_token`, {
         params: {
           client_id: process.env.META_APP_ID,
           client_secret: process.env.META_APP_SECRET,
-          code: code
-        }
+          code: code,
+          redirect_uri: '', // <--- Shudhu ei empty string parameter-ti jog korun
+        },
       });
       userAccessToken = tokenResponse.data.access_token;
     }
+    
 
     // Retrieve shared WABA ID
     let wabaId = null;
