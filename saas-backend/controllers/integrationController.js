@@ -74,7 +74,6 @@ export const connectWhatsAppOAuth = async (req, res) => {
           client_id: process.env.META_APP_ID,
           client_secret: process.env.META_APP_SECRET,
           code: code,
-          redirect_uri: '', // <--- Shudhu ei empty string parameter-ti jog korun
         },
       });
       userAccessToken = tokenResponse.data.access_token;
