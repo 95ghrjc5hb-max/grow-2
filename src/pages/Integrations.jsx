@@ -114,7 +114,7 @@ const handleWhatsApp1Click = () => {
       return;
     }
 
-   const waConfigId = import.meta.env.VITE_META_WA_CONFIG_ID;
+   const waConfigId = '2852190896187443';
 
 if (!waConfigId) {
   console.error("Meta WhatsApp Config ID is missing from environment variables.");
