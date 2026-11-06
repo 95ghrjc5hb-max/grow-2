@@ -217,8 +217,12 @@ console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 
 
             if (!integration) continue;
 
-            const token = integration.access_token;
-            const activePhoneId = integration.page_id || phoneNumberId;
+            
+const token = process.env.META_SYSTEM_USER_TOKEN || integration.access_token;
+
+
+const activePhoneId = phoneNumberId || integration.page_id;
+            
 
             // Handle Text or Audio Message
             if (message.type === 'text') {
