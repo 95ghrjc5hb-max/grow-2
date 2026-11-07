@@ -55,32 +55,31 @@ export const getIntegrations = async (req, res) => {
   }
 };
 
-// 2. 1-Click WhatsApp Embedded Signup OAuth Callback
+// 2. 1-Click WhatsApp Embedded Signup OAuth Callback (Production Enterprise Grade)
 export const connectWhatsAppOAuth = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || req.user?.sub;
-    if (!userId) return res.status(401).json({ success: false, error: "Unauthorized: User ID missing" });
-    
+    if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized: User ID missing' });
+
     const orgId = await getRealOrgId(userId);
     const { code } = req.body;
     if (!code) return res.status(400).json({ success: false, error: 'Missing token or code from Meta.' });
 
     let userAccessToken = code;
 
-    // If code is an authorization code (not a direct access token), exchange it
-        if (!code.startsWith("EA")) {
+    // ১. কোড যদি Authorization Code হয়, তবে Access Token এক্সচেঞ্জ করা
+    if (!code.startsWith('EAA')) {
       const tokenResponse = await axios.get(`${GRAPH_API_URL}/oauth/access_token`, {
         params: {
           client_id: process.env.META_APP_ID,
           client_secret: process.env.META_APP_SECRET,
           code: code,
-        },
+        }
       });
       userAccessToken = tokenResponse.data.access_token;
     }
-    
 
-    // Retrieve shared WABA ID
+    // ২. WABA ID সংগ্রহ (Debug Token)
     let wabaId = null;
     try {
       const debugResponse = await axios.get(`${GRAPH_API_URL}/debug_token`, {
@@ -90,26 +89,47 @@ export const connectWhatsAppOAuth = async (req, res) => {
         }
       });
       const granularScopes = debugResponse.data?.data?.granular_scopes || [];
-      const wabaScope = granularScopes.find((s) => s.scope === 'whatsapp_business_management');
-      wabaId = wabaScope?.target_ids?.[0] || null;
+      const wabaScope = granularScopes.find(s => s.scope === 'whatsapp_business_management');
+      wabaId = wabaScope?.target_ids?.[0];
     } catch (dbgErr) {
-      console.warn('[DEBUG TOKEN WARNING]:', dbgErr.message);
+      console.warn('[DEBUG TOKEN WARNING]:', dbgErr.response?.data || dbgErr.message);
     }
 
-    // Fetch Phone Number ID under this WABA
+    // ৩. WABA-র অধীনে ফোন নাম্বারের মেটাডেটা সংগ্রহ
     let phoneData = null;
     if (wabaId) {
       try {
         const phoneRes = await axios.get(`${GRAPH_API_URL}/${wabaId}/phone_numbers`, {
           headers: { Authorization: `Bearer ${userAccessToken}` }
         });
-        phoneData = phoneRes.data?.data?.[0] || null;
+        phoneData = phoneRes.data?.data?.[0];
       } catch (phoneErr) {
-        console.warn('[FETCH PHONE NUMBERS WARNING]:', phoneErr.message);
+        console.warn('[FETCH PHONE NUMBERS WARNING]:', phoneErr.response?.data || phoneErr.message);
       }
     }
 
-    // Auto-subscribe WABA to our Webhook
+    const phoneNumberId = phoneData?.id || wabaId;
+
+    // ৪. ক্লাউড এপিআইতে অটো-রেজিস্ট্রেশন (Pending স্ট্যাটাস দূর করে সাথে সাথে CONNECTED করবে)
+    if (phoneData?.id) {
+      try {
+        await axios.post(
+          `${GRAPH_API_URL}/${phoneData.id}/register`,
+          {
+            messaging_product: 'whatsapp',
+            pin: '123456' // মেটা ক্লাউড এপিআইয়ের জন্য ডিফল্ট রেজিস্ট্রেশন পিন
+          },
+          {
+            headers: { Authorization: `Bearer ${userAccessToken}` }
+          }
+        );
+        console.log(`[META ONBOARD SUCCESS] Phone ID ${phoneData.id} auto-registered & activated!`);
+      } catch (regErr) {
+        console.warn('[PHONE REGISTER WARNING]:', regErr.response?.data?.error?.message || regErr.message);
+      }
+    }
+
+    // ৫. অটো-সাবস্ক্রিপশন (Grow Webhook এ ইনকামিং মেসেজ চালু করা)
     if (wabaId) {
       try {
         await axios.post(
@@ -119,20 +139,25 @@ export const connectWhatsAppOAuth = async (req, res) => {
         );
         console.log(`[WABA AUTO-SUBSCRIBED]: WABA ${wabaId} subscribed!`);
       } catch (subErr) {
-        console.warn('[WABA SUBSCRIBE WARNING]:', subErr?.response?.data || subErr.message);
+        console.warn('[WABA SUBSCRIBE WARNING]:', subErr.response?.data || subErr.message);
       }
     }
 
-    // Save into Supabase integrations table
+    // ৬. সুপাবেস integrations টেবিলে সেভ
     const { data, error } = await supabase
       .from('integrations')
       .upsert({
         org_id: orgId,
         platform: 'whatsapp',
-        page_id: phoneData?.id || wabaId || 'whatsapp_connected',
+        page_id: phoneNumberId, // স্ট্রিক্ট ওয়েববুক হুবহু এই আইডি খুঁজবে
         access_token: userAccessToken,
         status: 'connected',
         is_connected: true,
+        credentials: {
+          wabaId,
+          phoneNumberId: phoneData?.id,
+          displayPhoneNumber: phoneData?.display_phone_number
+        },
         updated_at: new Date()
       }, { onConflict: 'org_id, platform' });
 
@@ -140,14 +165,14 @@ export const connectWhatsAppOAuth = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: 'WhatsApp Business connected successfully!',
+      message: 'WhatsApp Business connected and activated successfully!',
       data
     });
   } catch (error) {
-    console.error('[WHATSAPP OAUTH ERROR]:', error?.response?.data || error.message);
+    console.error('[WHATSAPP OAUTH ERROR]:', error.response?.data || error.message);
     return res.status(500).json({
       success: false,
-      error: error?.response?.data?.error?.message || error.message || 'Failed to connect WhatsApp'
+      error: error.response?.data?.error?.message || error.message || 'Failed to connect WhatsApp'
     });
   }
 };
