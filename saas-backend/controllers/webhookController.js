@@ -207,22 +207,30 @@ console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 
           let audioUrl = null;
 
           try {
-            let { data: integration } = await supabase
-              .from('integrations')
-              .select('*')
-              .eq('platform', 'whatsapp')
-              .eq('status', 'connected')
-              .limit(1)
-              .maybeSingle();
+           // 1. Production Strict Multi-Tenant Lookup: Matching exact phone_number_id
+     // 1. Strict Multi-Tenant Lookup: Meta-র incoming phone_number_id দিয়ে সুনির্দিষ্ট tenant খোঁজা
+      const { data: integration, error: dbErr } = await supabase
+        .from('integrations')
+        .select('*')
+        .eq('platform', 'whatsapp')
+        .eq('page_id', phoneNumberId)
+        .eq('is_connected', true)
+        .maybeSingle();
 
-            if (!integration) continue;
+      if (dbErr) {
+        console.error(`[DB ERROR] WhatsApp integration lookup failed for ID ${phoneNumberId}:`, dbErr.message);
+        continue;
+      }
 
-            
-const token = process.env.META_SYSTEM_USER_TOKEN || integration.access_token;
+      // 2. Strict Security Guard: Grow-তে রেজিস্টার্ড না থাকলে কোনো guessing/fallback হবে না, সরাসরি ড্রপ
+      if (!integration) {
+        console.warn(`[SECURITY AUDIT] Dropped unauthorized webhook. Unknown Phone ID: ${phoneNumberId}`);
+        continue;
+      }
 
-
-const activePhoneId = phoneNumberId || integration.page_id;
-            
+      // 3. Organization Credentials Isolation
+      const token = integration.access_token || process.env.META_SYSTEM_USER_TOKEN;
+      const activePhoneId = integration.page_id;
 
             // Handle Text or Audio Message
             if (message.type === 'text') {

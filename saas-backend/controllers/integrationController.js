@@ -159,13 +159,15 @@ export const connectWhatsApp = async (req, res) => {
     if (!userId) return res.status(401).json({ success: false, error: "Unauthorized: User ID missing" });
     
     const orgId = await getRealOrgId(userId);
-
+const { phoneNumber, apiKey, phoneNumberId } = req.body;
     const { data, error } = await supabase
       .from('integrations')
       .upsert({
         org_id: orgId,
         platform: 'whatsapp',
+        page_id: phoneNumberId || phoneNumber, // এটি নিশ্চিত করে incoming webhook সরাসরি tenant-কে চিনবে
         status: 'connected',
+        is_connected: true,
         credentials: { phoneNumber, apiKey },
         updated_at: new Date()
       }, { onConflict: 'org_id, platform' });
