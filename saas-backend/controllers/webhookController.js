@@ -5,6 +5,7 @@ import { createShopifyOrder } from '../services/shopifyService.js';
 import { getNotificationSettings, getBillingUsage } from '../services/settingsService.js';
 import { handleCustomerMessage, transcribeAudioWithGroq } from '../services/aiAgentService.js';
 import { checkAndIncrementMetaUsage } from '../services/usageService.js';
+import { enqueueOutboundMessage } from '../services/queueService.js';
 // --- Helper: Send Notification to Slack & Discord ---
 const sendAlertToChannels = async (orgId, eventType, textMessage) => {
     try {
@@ -339,7 +340,24 @@ console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 
               : (aiResponse?.reply || 'Sorry, I could not process your request.');
 
             const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
-
+           // Non-Blocking WhatsApp Text Dispatch via BullMQ
+    if (replyText) {
+      try {
+        await enqueueOutboundMessage({
+          platform: 'whatsapp',
+          orgId: integration.org_id,
+          integrationId: integration.id,
+          recipientId: customerPhone,
+          messagePayload: {
+            type: 'text',
+            text: { body: replyText }
+          },
+          priority: 1
+        });
+      } catch (queueErr) {
+        console.error('[OUTBOUND ENQUEUE ERROR] WhatsApp reply queue failed:', queueErr.message);
+      }
+    }
            // 6. Send WhatsApp Reply with Dynamic 1 to max 6 Images
     await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
 
