@@ -1,957 +1,248 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { supabase } from '../config/supabase.js';
-import { sendMetaReply, sendWhatsAppReply } from '../services/metaGraphService.js';
-import { createShopifyOrder } from '../services/shopifyService.js';
-import { getNotificationSettings, getBillingUsage } from '../services/settingsService.js';
-import { handleCustomerMessage, transcribeAudioWithGroq } from '../services/aiAgentService.js';
-import { checkAndIncrementMetaUsage } from '../services/usageService.js';
-import { enqueueOutboundMessage } from '../services/queueService.js';
-// --- Helper: Send Notification to Slack & Discord ---
-const sendAlertToChannels = async (orgId, eventType, textMessage) => {
-    try {
-        const settings = await getNotificationSettings(orgId);
-        if (!settings) return;
+import { enqueueInboundEvent } from '../services/queueService.js';
 
-        const pushToWebhook = async (url, payload) => {
-            if (!url) return;
-            await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-        };
-
-        // Slack check & send
-        if (settings.slack && settings.slack[eventType] && settings.slack.webhookUrl) {
-            await pushToWebhook(settings.slack.webhookUrl, { text: `🔔 *Grow SaaS Alert:*\n${textMessage}` });
-        }
-
-        // Discord check & send
-        if (settings.discord && settings.discord[eventType] && settings.discord.webhookUrl) {
-            await pushToWebhook(settings.discord.webhookUrl, { content: `🔔 **Grow SaaS Alert:**\n${textMessage}` });
-        }
-    } catch (err) {
-        console.error('[NOTIFICATION ERROR]', err.message);
-    }
-};
-
-// Meta Webhook Verification (Messenger, Instagram & WhatsApp)
+// ─── 1. VERIFY (GET) ───
 export const verifyMetaWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
-  if (mode === 'subscribe' && token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
+  const expectedToken = process.env.META_WEBHOOK_VERIFY_TOKEN || process.env.META_VERIFY_TOKEN;
+  if (mode === 'subscribe' && expectedToken && token === expectedToken) {
     console.log('[WEBHOOK VERIFIED]');
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 };
+export const verifyWebhook = verifyMetaWebhook;
 
-// Helper: Get or Create Conversation Thread in Supabase
-const getOrCreateConversation = async (orgId, channel, customerId, customerName, initialMessage) => {
-  try {
-    let { data: conv } = await supabase
-      .from('conversations')
-      .select('*')
-      .eq('org_id', orgId)
-      .eq('customer_identifier', customerId)
-      .eq('channel', channel)
-      .maybeSingle();
-
-    if (!conv) {
-      const { data: newConv, error: createError } = await supabase
-        .from('conversations')
-        .insert({
-          org_id: orgId,
-          customer_name: customerName,
-          customer_identifier: customerId,
-          channel: channel,
-          last_message: initialMessage,
-          status: 'open',
-          message_count: 0,
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-
-      if (createError) throw createError;
-      return newConv;
-    }
-
-    // Update conversation timestamp & last message
-    await supabase
-      .from('conversations')
-      .update({
-        last_message: initialMessage,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', conv.id);
-
-    return conv;
-  } catch (err) {
-    console.error('CONVERSATION SYNC ERROR:', err.message);
-    return null;
-  }
-};
-
-// Helper: Push order to Shopify
-const syncOrderToShopify = async (orgId, orderData) => {
-  try {
-    const { data: shopifyInt } = await supabase
-      .from('integrations')
-      .select('*')
-      .eq('org_id', orgId)
-      .eq('platform', 'shopify')
-      .eq('status', 'connected')
-      .limit(1)
-      .maybeSingle();
-
-    if (shopifyInt && shopifyInt.access_token) {
-      const shopDomain = shopifyInt.metadata?.shop_domain || shopifyInt.account_name;
-      if (shopDomain) {
-        await createShopifyOrder(shopDomain, shopifyInt.access_token, orderData);
-      }
-    }
-  } catch (err) {
-    console.error('[SHOPIFY SYNC WARNING]:', err.message);
-  }
-};
-
-// Central Omnichannel Webhook Receiver
-export const handleMetaWebhook = async (req, res) => {
-// 1. CRYPTOGRAPHIC SECURITY: Enterprise Multi-Secret HMAC-SHA256 Verification
+// ─── 2. HMAC — Dual secret, Gemini er valo dik ta rakhlam ───
+function verifyHmacSignature(req) {
   const signature = req.headers['x-hub-signature-256'];
-
-  if (!signature) {
-    console.error("Security Alert: Missing Meta signature header! Request dropped.");
-    return res.status(401).json({ error: 'Missing x-hub-signature-256' });
+  if (!signature || typeof signature !== 'string') return false;
+  const parts = signature.split('=');
+  const signatureHash = parts[1];
+  if (!signatureHash) return false;
+  const secrets = [process.env.META_APP_SECRET, process.env.INSTAGRAM_APP_SECRET].filter(Boolean);
+  if (secrets.length === 0) return false;
+  const rawPayload = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+  const sigBuf = Buffer.from(signatureHash, 'utf8');
+  for (const secret of secrets) {
+    const expectedHash = crypto.createHmac('sha256', secret).update(rawPayload).digest('hex');
+    const expBuf = Buffer.from(expectedHash, 'utf8');
+    if (sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf)) return true;
   }
+  return false;
+}
 
-  const elements = signature.split('=');
-  const signatureHash = elements[1];
-
-  if (!signatureHash) {
-    console.error("Security Alert: Malformed signature format! Request dropped.");
-    return res.status(401).json({ error: 'Invalid signature format' });
+// ─── 3. DEDUP — insert age, kintu enqueue fail hole delete kore dibo ───
+async function checkAndMarkProcessed(mid) {
+  if (!mid) return false;
+  const cleanMid = String(mid);
+  try {
+    const { data } = await supabase.from('processed_webhooks').select('mid').eq('mid', cleanMid).maybeSingle();
+    if (data) return true;
+    const { error } = await supabase.from('processed_webhooks').insert({ mid: cleanMid });
+    if (error) {
+      if (error.code === '23505') return true;
+      console.error('[DEDUP WARN]:', error.message);
+      return false;
+    }
+    return false;
+  } catch (e) {
+    console.error('[DEDUP ERROR]:', e.message);
+    return false;
   }
+}
+async function unmarkProcessed(mid) {
+  if (!mid) return;
+  try { await supabase.from('processed_webhooks').delete().eq('mid', String(mid)); } catch {}
+}
 
-  // Dual-Secret pipeline: Parent Meta App Secret and Instagram API Secret
-  const configuredSecrets = [
-    process.env.META_APP_SECRET,
-    process.env.INSTAGRAM_APP_SECRET
-  ].filter(Boolean);
-
-  const rawPayload = req.rawBody || Buffer.from(JSON.stringify(req.body));
-// --- TEMPORARY DEBUG LOG ---
-  console.log('--- HMAC DEBUG START ---');
-  console.log('1. RawBody ache kina:', Boolean(req.rawBody), 'Length:', req.rawBody?.length);
-  console.log('--- HMAC DEBUG START ---');
- console.log('1. RawBody ache kina:', Boolean(req.rawBody), 'Length:', req.rawBody?.length);
- console.log('👉 INCOMING PAYLOAD:', req.rawBody?.toString('utf8')); // <--- এই নতুন লাইনটি যোগ করুন
-console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 4) + '...' + s.slice(-4) : 'UNDEFINED'));
-  console.log('2. Configured Secrets:', configuredSecrets.map(s => s ? s.slice(0, 4) + '...' + s.slice(-4) : 'UNDEFINED'));
-  console.log('3. Meta Incoming Hash:', signatureHash);
-  for (const s of configuredSecrets) {
-    const testHash = crypto.createHmac('sha256', s).update(rawPayload).digest('hex');
-    console.log(`4. Calculated (${s.slice(0, 4)}...):`, testHash);
+// ─── 4. INTEGRATION LOOKUP — account_id query bad dilam, shudhu page_id + credentials ───
+function getNestedValue(integration, keys) {
+  if (!integration) return null;
+  for (const k of keys) {
+    if (integration[k] !== undefined && integration[k] !== null && integration[k] !== '') return String(integration[k]);
   }
-  console.log('--- HMAC DEBUG END ---');
-  // Verify signature against all valid configured secrets
-  let isSignatureValid = false;
-
-  for (const secret of configuredSecrets) {
-    const expectedHash = crypto
-      .createHmac('sha256', secret)
-      .update(rawPayload)
-      .digest('hex');
-
-    const signatureBuffer = Buffer.from(signatureHash, 'utf8');
-    const expectedBuffer = Buffer.from(expectedHash, 'utf8');
-
-    if (
-      signatureBuffer.length === expectedBuffer.length &&
-      crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
-    ) {
-      isSignatureValid = true;
-      break;
+  const creds = integration.credentials || {};
+  for (const k of keys) {
+    if (creds[k] !== undefined && creds[k] !== null && creds[k] !== '') return String(creds[k]);
+  }
+  return null;
+}
+function isActive(integration) {
+  if (!integration) return false;
+  if (integration.is_connected === false) return false;
+  if (integration.status === 'disconnected' || integration.status === 'needs_reauth') return false;
+  return true;
+}
+async function findIntegration(platform, candidateIds = []) {
+  const validIds = [...new Set(candidateIds.filter(Boolean).map(String))];
+  if (validIds.length === 0) return null;
+  for (const candidateId of validIds) {
+    const { data: byPage } = await supabase.from('integrations').select('*').eq('platform', platform).eq('page_id', candidateId).limit(1).maybeSingle();
+    if (isActive(byPage)) return byPage;
+    // account_id column DB te nai, tai query korbo na — agei bug chilo
+  }
+  const { data: list } = await supabase.from('integrations').select('*').eq('platform', platform);
+  if (Array.isArray(list)) {
+    for (const integ of list) {
+      if (!isActive(integ)) continue;
+      const phoneId = getNestedValue(integ, ['phone_number_id', 'phoneNumberId']);
+      const igId = getNestedValue(integ, ['ig_user_id', 'igUserId', 'instagram_id', 'instagramId']);
+      const pageId = getNestedValue(integ, ['page_id', 'pageId']);
+      if ((phoneId && validIds.includes(phoneId)) || (igId && validIds.includes(igId)) || (pageId && validIds.includes(pageId))) return integ;
     }
   }
+  return null;
+}
+// Page object hole messenger + instagram 2 tai try koro — Gemini er vul fix
+async function findIntegrationForPageObject(candidateIds) {
+  let integ = await findIntegration('messenger', candidateIds);
+  if (integ) return integ;
+  integ = await findIntegration('instagram', candidateIds);
+  if (integ) return integ;
+  return null;
+}
 
-  if (!isSignatureValid) {
-    console.warn("Security Alert: Fake Meta webhook detected! Request dropped.");
-    return res.status(403).json({ error: 'Invalid HMAC signature' });
-  }
-
-  // Acknowledge Meta immediately to prevent retry-loops and connection holding
+// ─── 5. MAIN HANDLER — THIN, 200 agei ───
+export const handleMetaWebhook = async (req, res) => {
+  if (!req.headers['x-hub-signature-256']) return res.status(401).json({ error: 'Missing x-hub-signature-256' });
+  if (!verifyHmacSignature(req)) return res.status(403).json({ error: 'Invalid HMAC signature' });
   res.status(200).send('EVENT_RECEIVED');
-
   const body = req.body;
-
-  // =========================================================================
-  // 1. WHATSAPP BUSINESS CLOUD API HANDLER
-  // =========================================================================
-  if (body.object === 'whatsapp_business_account') {
-    for (const entry of body.entry || []) {
-      for (const change of entry.changes || []) {
-        if (change.field !== 'messages') continue;
-
-        const value = change.value;
-        const phoneNumberId = value.metadata?.phone_number_id;
-        const messages = value.messages;
-
-        if (!messages || messages.length === 0) continue;
-
-        for (const message of messages) {
-          const customerPhone = message.from;
-          let customerMessage = '';
-          let audioUrl = null;
-
-          try {
-           // 1. Production Strict Multi-Tenant Lookup: Matching exact phone_number_id
-     // 1. Strict Multi-Tenant Lookup: Meta-র incoming phone_number_id দিয়ে সুনির্দিষ্ট tenant খোঁজা
-      const { data: integration, error: dbErr } = await supabase
-        .from('integrations')
-        .select('*')
-        .eq('platform', 'whatsapp')
-        .eq('page_id', phoneNumberId)
-        .eq('is_connected', true)
-        .maybeSingle();
-
-      if (dbErr) {
-        console.error(`[DB ERROR] WhatsApp integration lookup failed for ID ${phoneNumberId}:`, dbErr.message);
-        continue;
-      }
-
-      // 2. Strict Security Guard: Grow-তে রেজিস্টার্ড না থাকলে কোনো guessing/fallback হবে না, সরাসরি ড্রপ
-      if (!integration) {
-        console.warn(`[SECURITY AUDIT] Dropped unauthorized webhook. Unknown Phone ID: ${phoneNumberId}`);
-        continue;
-      }
-
-      // 3. Organization Credentials Isolation
-      const token = integration.access_token || process.env.META_SYSTEM_USER_TOKEN;
-      const activePhoneId = integration.page_id;
-
-            // Handle Text or Audio Message
-            if (message.type === 'text') {
-              customerMessage = message.text.body || '';
-            } else if (message.type === 'audio' || message.type === 'voice') {
-              const audioObj = message.audio || message.voice;
-              if (audioObj && audioObj.id) {
-                try {
-                  const mediaRes = await fetch(`https://graph.facebook.com/v19.0/${audioObj.id}`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                  });
-                  const mediaData = await mediaRes.json();
-                  if (mediaData && mediaData.url) {
-                    audioUrl = mediaData.url;
-                  }
-                } catch (err) {
-                  console.error('[WHATSAPP AUDIO URL FETCH ERROR]:', err.message);
-                }
+  if (!body || typeof body !== 'object') return;
+  try {
+    // A. WHATSAPP
+    if (body.object === 'whatsapp_business_account') {
+      for (const entry of body.entry || []) {
+        const wabaId = entry.id;
+        for (const change of entry.changes || []) {
+          if (change.field !== 'messages') continue;
+          const value = change.value || {};
+          const phoneNumberId = value.metadata?.phone_number_id;
+          if (Array.isArray(value.statuses)) {
+            for (const st of value.statuses) {
+              if (st.id && st.status) {
+                const patch = { status: st.status };
+                if (st.status === 'failed' && st.errors?.[0]) patch.error = st.errors[0].title || st.errors[0].message || 'WhatsApp delivery failed';
+                await supabase.from('messages').update(patch).eq('platform_message_id', st.id);
               }
             }
-
-            if (audioUrl) {
-              customerMessage = await transcribeAudioWithGroq(audioUrl);
+          }
+          const messages = value.messages;
+          if (!Array.isArray(messages) || messages.length === 0) continue;
+          for (const msg of messages) {
+            const platformMessageId = msg.id || null;
+            if (await checkAndMarkProcessed(platformMessageId)) continue;
+            const senderId = msg.from;
+            if (!senderId) { await unmarkProcessed(platformMessageId); continue; }
+            const contactName = value.contacts?.find((c) => c.wa_id === senderId)?.profile?.name || `+${senderId}`;
+            let messageText = '';
+            let imageUrl = null;
+            let audioMediaId = null;
+            let audioUrl = null;
+            if (msg.type === 'text') messageText = msg.text?.body || '';
+            else if (msg.type === 'audio' || msg.type === 'voice') audioMediaId = msg.audio?.id || msg.voice?.id || null;
+            else if (msg.type === 'image') { messageText = msg.image?.caption || '[Image]'; imageUrl = msg.image?.link || null; }
+            else if (msg.type === 'video') messageText = msg.video?.caption || '[Video]';
+            else if (msg.type === 'document') messageText = msg.document?.caption || '[Document]';
+            else if (msg.type === 'location') messageText = `[Location] ${msg.location?.latitude},${msg.location?.longitude}`;
+            else if (msg.type === 'contacts') messageText = '[Contact shared]';
+            else if (msg.type === 'sticker') messageText = '[Sticker]';
+            else if (msg.type === 'button') messageText = msg.button?.text || msg.button?.payload || '';
+            else if (msg.type === 'interactive') {
+              const inter = msg.interactive || {};
+              messageText = inter.button_reply?.title || inter.list_reply?.title || inter.button_reply?.id || inter.list_reply?.id || '[Interactive]';
+            } else messageText = `[${msg.type || 'message'}]`;
+            if (!messageText && !audioMediaId && !imageUrl) { await unmarkProcessed(platformMessageId); continue; }
+            const integration = await findIntegration('whatsapp', [phoneNumberId, wabaId]);
+            if (!integration) { console.warn(`[DROPPED] No WhatsApp integration for ${phoneNumberId}`); await unmarkProcessed(platformMessageId); continue; }
+            try {
+              await enqueueInboundEvent({ platform: 'whatsapp', orgId: integration.org_id, integrationId: integration.id, senderId, customerName: contactName, messageText, imageUrl, audioUrl, audioMediaId, platformMessageId, rawEvent: { entryId: entry.id, field: change.field } });
+            } catch (e) {
+              console.error('[ENQUEUE FAIL] WhatsApp, unmarking for retry:', e.message);
+              await unmarkProcessed(platformMessageId);
             }
-
-            if (!customerMessage) continue;
-
-            // 1. Sync Conversation in Supabase
-            const conv = await getOrCreateConversation(
-              integration.org_id,
-              'whatsapp',
-              customerPhone,
-              `+${customerPhone}`,
-              customerMessage
-            );
-
-            // 2. Save incoming message
-            if (conv) {
-              await supabase.from('messages').insert({
-  conversation_id: conv.id,
-  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
-  sender: 'customer',
-  content: customerMessage,
-  platform_message_id: message.id || null,
-  created_at: new Date().toISOString()
-});
-            }
-
-            // 3. Fetch products
-            const { data: products } = await supabase
-              .from('products')
-              .select('*')
-              .eq('org_id', integration.org_id);
-
-            // 4. Fetch chat memory
-            let conversationHistory = [];
-            if (conv) {
-              const { data: chatHistory } = await supabase
-                .from('messages')
-                .select('*')
-                .eq('conversation_id', conv.id)
-                .order('created_at', { ascending: false })
-                .limit(10);
-
-              conversationHistory = (chatHistory || []).reverse().map(m => ({
-                role: m.sender === 'customer' ? 'user' : 'assistant',
-                content: m.content || ''
-              }));
-            }
-
-            if (conv && conv.ai_active === false) {
-              console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
-              continue; 
-            }
-
-            // 5. Call AI Service & Check Meta Customer Limit
-    let aiResponse = null;
-    const usage = await checkAndIncrementMetaUsage(integration.org_id, customerPhone);
-
-    if (!usage.allowed) {
-      console.log(`[AI BLOCKED] WhatsApp Org ${integration.org_id} reached Meta limit (${usage.reason})`);
-      aiResponse = {
-        reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
-        handover: true
-      };
-    } else {
-      aiResponse = await handleCustomerMessage({
-        customerMessage,
-        orgId: integration.org_id,
-        storeProducts: products || [],
-        conversationHistory,
-        imageUrl: null
-      });
-    }
-
-       if (aiResponse && aiResponse.handover) {
-            await sendAlertToChannels(
-                integration.org_id,
-                'notifyOnHandover',
-                `🚨 *Human Assistance Requested!*\n*Platform:* WhatsApp\n*Customer Phone:* ${customerPhone}\n*Last Message:* "${customerMessage}"\n\nPlease check the GROWCORE Unified Inbox to assist the customer.`
-            );
-        }
-
-            const replyText = typeof aiResponse === 'string'
-              ? aiResponse
-              : (aiResponse?.reply || 'Sorry, I could not process your request.');
-
-            const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
-           // Non-Blocking WhatsApp Text Dispatch via BullMQ
-    if (replyText) {
-      try {
-        await enqueueOutboundMessage({
-          platform: 'whatsapp',
-          orgId: integration.org_id,
-          integrationId: integration.id,
-          recipientId: customerPhone,
-          messagePayload: {
-            type: 'text',
-            text: { body: replyText }
-          },
-          priority: 1
-        });
-      } catch (queueErr) {
-        console.error('[OUTBOUND ENQUEUE ERROR] WhatsApp reply queue failed:', queueErr.message);
-      }
-    }
-           // 6. Send WhatsApp Reply with Dynamic 1 to max 6 Images
-    await sendWhatsAppReply(token, activePhoneId, customerPhone, replyText);
-
-    let waImagesToSend = [];
-    const waReplyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
-// WhatsApp Multi-Image Fix (Line 304-318)
-    if (waReplyImage) {
-      const matchedProd = (products || []).find(p => 
-        p.image_url === waReplyImage ||
-        (typeof p.images === 'string' && p.images.includes(waReplyImage)) ||
-        (Array.isArray(p.images) && p.images.includes(waReplyImage))
-      ) || (products && products[0]);
-
-      const rawImages = matchedProd?.images || matchedProd?.image_url || waReplyImage;
-
-      if (Array.isArray(rawImages)) {
-        waImagesToSend = rawImages;
-      } else if (typeof rawImages === 'string') {
-        const trimmed = rawImages.trim();
-        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-          try { waImagesToSend = JSON.parse(trimmed); } catch (e) { waImagesToSend = [trimmed]; }
-        } else if (trimmed.includes(',')) {
-          waImagesToSend = trimmed.split(',').map(u => u.trim()).filter(Boolean);
-        } else {
-          waImagesToSend = [trimmed];
-        }
-      } else {
-        waImagesToSend = [waReplyImage];
-      }
-
-      waImagesToSend = waImagesToSend.slice(0, 6);
-    }
-
-    for (const imgItem of waImagesToSend) {
-      const validUrl = typeof imgItem === 'string' ? imgItem : (imgItem?.src || imgItem?.url);
-      if (validUrl && validUrl.startsWith('http')) {
-        try {
-          await fetch(`https://graph.facebook.com/v19.0/${activePhoneId}/messages`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              messaging_product: 'whatsapp',
-              recipient_type: 'individual',
-              to: customerPhone,
-              type: 'image',
-              image: { link: validUrl }
-            })
-          });
-          await new Promise(res => setTimeout(res, 300));
-        } catch (imgErr) {
-          console.error('[WHATSAPP IMAGE SEND ERROR]:', imgErr.message);
-        }
-      }
-    }
-
-            // 7. Save outgoing message
-            if (conv) {
-              await supabase.from('messages').insert({
-  conversation_id: conv.id,
-  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
-  sender: 'bot',
-  content: replyText,
-  created_at: new Date().toISOString()
-});
-              await supabase
-                .from('conversations')
-                .update({ last_message: replyText, updated_at: new Date() })
-                .eq('id', conv.id);
-            }
-
-            // 8. Dynamic Order Creation (WhatsApp)
-            if (aiResponse && aiResponse.orderData) {
-              const orderData = aiResponse.orderData;
-              const generatedOrderId = `ORD-${Date.now().toString().slice(-6)}`;
-
-              const finalCustomerName = 
-                orderData.customer_name || 
-                orderData.customerName || 
-                orderData.name || 
-                'Valued Customer';
-
-              const finalPhone = 
-                orderData.phone_number || 
-                orderData.phone || 
-                customerPhone || 
-                null;
-
-              const finalAddress = 
-                orderData.delivery_address || 
-                orderData.address || 
-                null;
-
-              const quantity = parseInt(orderData.product_quantity || orderData.quantity || 1, 10);
-              const finalTotal = parseFloat(orderData.totalPrice || orderData.total_amount || 0);
-              const deliveryCharge = parseFloat(orderData.delivery_charge || 0);
-
-              const coreKeys = new Set([
-                'customer_name', 'customerName', 'name',
-                'phone_number', 'phone', 'customer_phone',
-                'delivery_address', 'address',
-                'product_quantity', 'quantity',
-                'product_title', 'product_name', 'products', 'orderedProducts',
-                'totalPrice', 'total_amount', 'delivery_charge'
-              ]);
-
-              const dynamicCustomDetails = {};
-              const variantSpecs = [];
-
-              Object.entries(orderData).forEach(([key, value]) => {
-                if (!coreKeys.has(key) && value !== null && value !== undefined) {
-                  dynamicCustomDetails[key] = value;
-                  if (key !== 'delivery_zone' && key !== 'currency') {
-                    variantSpecs.push(`${key}: ${value}`);
-                  }
-                }
-              });
-
-              const baseProductName = 
-                orderData.product_title || 
-                orderData.product_name || 
-                orderData.products || 
-                (Array.isArray(products) && products.length > 0 ? (products[0].title || products[0].name) : 'Ordered Product');
-
-              const variantSuffix = variantSpecs.length > 0 ? ` (${variantSpecs.join(', ')})` : '';
-              const finalProducts = `${quantity}x ${baseProductName}${variantSuffix}`;
-
-              await supabase.from('orders').insert([{
-                org_id: integration.org_id,
-                order_id: generatedOrderId,
-                customer_name: finalCustomerName,
-                customer_phone: finalPhone,
-                address: finalAddress,
-                products: finalProducts,
-                total_amount: finalTotal,
-                status: 'pending',
-                custom_details: dynamicCustomDetails,
-                delivery_charge: deliveryCharge
-              }]);
-
-              try {
-                await syncOrderToShopify(integration.org_id, aiResponse.orderData);
-              } catch (shopifyErr) {
-                console.warn('[SHOPIFY SYNC WARNING]:', shopifyErr.message);
-              }
-
-              try {
-                await sendAlertToChannels(
-                  integration.org_id,
-                  'notifyOnOrderUpdate',
-                  `🛍️ New WhatsApp Order!\n🆔 Order: ${generatedOrderId}\n👤 Customer: ${finalCustomerName}\n📞 Phone: ${finalPhone || 'N/A'}\n📦 Items: ${finalProducts}\n💰 Total: ${finalTotal}`
-                );
-              } catch (alertErr) {
-                console.warn('[ALERT WARNING]:', alertErr.message);
-              }
-            }
-          } catch (err) {
-            console.error('[WHATSAPP WEBHOOK ERROR]:', err.message);
           }
         }
       }
+      return;
     }
-    return;
-  }
-
-  // =========================================================================
-  // 2. FACEBOOK MESSENGER & INSTAGRAM HANDLER
-  // =========================================================================
-  if (body.object === 'page' || body.object === 'instagram') {
-    for (const entry of body.entry || []) {
-      const pageId = entry.id;
-
-      let events = [];
-      if (entry.messaging && Array.isArray(entry.messaging)) {
-        events = entry.messaging;
-      } else if (entry.changes && Array.isArray(entry.changes)) {
-        events = entry.changes
-          .filter((change) => change.field === 'messages' && change.value)
-          .map((change) => change.value);
-      }
-
-      if (events.length === 0) continue;
-
-      for (const messagingEvent of events) {
-  if (!messagingEvent.message || messagingEvent.message.is_echo) continue;
-
-  const messageId = messagingEvent.message.mid;
-
-  if (messageId) {
-    const { error: lockError } = await supabase
-      .from('processed_webhooks')
-      .insert({ mid: messageId });
-
-    if (lockError) {
-      if (lockError.code === '23505') {
-        console.warn(`[ENTERPRISE DEDUPLICATION] Concurrently dropped duplicate mid: ${messageId}`);
-        continue;
-      }
-      console.error('[IDEMPOTENCY DB ERROR]:', lockError.message);
-    }
-  }
-
-  const senderId = messagingEvent.sender?.id;
-  let customerMessage = messagingEvent.message?.text || '';
-        // 1. Extract Image & Audio
-        const imageAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'image');
-        const imageUrl = imageAttachment?.payload?.url || null;
-
-        const audioAttachment = messagingEvent.message?.attachments?.find(att => att.type === 'audio');
-        const audioUrl = audioAttachment?.payload?.url || null;
-
-        if (audioUrl && !customerMessage) {
-          customerMessage = await transcribeAudioWithGroq(audioUrl);
-        }
-
-        if (!senderId || (!customerMessage && !imageUrl)) continue;
-
-        try {
-         // Line 550-570 er poriborte:
-const targetPlatform = body.object === 'page' ? 'messenger' : 'instagram';
-const lookupId = messagingEvent.recipient?.id || pageId;
-
-let { data: integration } = await supabase
-    .from('integrations')
-    .select('*')
-    .eq('page_id', lookupId)
-    .eq('platform', targetPlatform)
-    .limit(1)
-    .maybeSingle();
-
-// Jodi recipient.id diye na pay, entry.id diye check
-if (!integration) {
-    const { data: fallbackByEntry } = await supabase
-        .from('integrations')
-        .select('*')
-        .eq('page_id', pageId)
-        .limit(1)
-        .maybeSingle();
-    integration = fallbackByEntry;
-}
-
-if (!integration) {
-    console.warn(`[WEBHOOK DROPPED] No integration found for ID: ${lookupId}`);
-    continue;
-}
-
-          if (!integration) continue;
-
-          // 1. Sync Conversation
-          const displayName = targetPlatform === 'messenger' 
-            ? `Messenger User (${senderId.slice(-4)})` 
-            : `Instagram User (${senderId.slice(-4)})`;
-
-          const conv = await getOrCreateConversation(
-            integration.org_id,
-            targetPlatform,
-            senderId,
-            displayName,
-            customerMessage || '[Customer sent an image]'
-          );
-
-          // 2. Save incoming message
-          if (conv) {
-            await supabase.from('messages').insert({
-  conversation_id: conv.id,
-  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
-  sender: 'customer',
-  content: customerMessage || '[Customer sent an image]',
-  platform_message_id: messagingEvent.message.mid || null,
-  created_at: new Date().toISOString()
-});
-          }
-
-          // 3. Fetch products
-          const { data: products } = await supabase
-            .from('products')
-            .select('*')
-            .eq('org_id', integration.org_id);
-
-          // 4. Fetch chat memory
-          let conversationHistory = [];
-          if (conv) {
-            const { data: chatHistory } = await supabase
-              .from('messages')
-              .select('*')
-              .eq('conversation_id', conv.id)
-              .order('created_at', { ascending: false })
-              .limit(10);
-
-            conversationHistory = (chatHistory || []).reverse().map(m => ({
-              direction: m.sender === 'customer' ? 'incoming' : 'outgoing',
-              message: m.content
-            }));
-          } 
-
-          if (conv && conv.ai_active === false) {
-            console.log('[AI PAUSED] Bot is paused by human agent. Skipping bot reply.');
-            continue; 
-          }
-
-          // 5. Call AI Service & Check Meta Customer Limit
-    let aiResponse = null;
-    const usage = await checkAndIncrementMetaUsage(integration.org_id, senderId);
-
-    if (!usage.allowed) {
-      console.log(`[AI BLOCKED] Messenger/IG Org ${integration.org_id} reached Meta limit (${usage.reason})`);
-      aiResponse = {
-        reply: "⚠️ Limit reached! Please upgrade or renew your plan to continue using AI.",
-        handover: true
-      };
-    } else {
-      aiResponse = await handleCustomerMessage({
-        customerMessage,
-        orgId: integration.org_id,
-        storeProducts: products || [],
-        conversationHistory,
-        imageUrl
-      });
-    }
-         if (aiResponse && aiResponse.handover) {
-            const platformName = integration.platform === 'messenger' ? 'MESSENGER' : 'INSTAGRAM';
-            await sendAlertToChannels(
-                integration.org_id,
-                'notifyOnHandover',
-                `🚨 *Human Assistance Requested!*\n*Platform:* ${platformName}\n*Customer ID:* ${senderId}\n*Last Message:* "${customerMessage}"\n\nPlease check the GROWCORE Unified Inbox to assist the customer.`
-            );
-        }
-         
-          let replyText = typeof aiResponse === 'string'
-            ? aiResponse
-            : (aiResponse?.reply || 'Sorry, I could not process your request.');
-            
-        
-
-          // 6. Resolve all product images (Dynamic 1 to max 6 images)
-    let imagesToSend = [];
-    const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
-
-    // A. Strip ugly raw Supabase URLs from text reply so bot never sends links as text
-    if (replyText) {
-      replyText = replyText
-        .replace(/•?\s*Image\s*\d*:\s*https?:\/\/\S+/gi, '')
-        .replace(/https?:\/\/[^\s]+supabase\.co\/storage\S+/gi, '')
-        .replace(/\n\s*\n\s*\n/g, '\n\n')
-        .trim();
-    }
-
-   // B. Extract all image URLs ONLY IF AI decided to show images (replyImage exists)
-    if (replyImage) {
-      const matchedProd = (products || []).find(p => 
-        p.image_url === replyImage ||
-        (typeof p.images === 'string' && p.images.includes(replyImage)) ||
-        (Array.isArray(p.images) && p.images.includes(replyImage))
-      ) || (products && products[0]);
-
-      const rawImages = matchedProd?.images || matchedProd?.image_url || replyImage;
-
-      if (Array.isArray(rawImages)) {
-        imagesToSend = rawImages;
-      } else if (typeof rawImages === 'string') {
-        const trimmed = rawImages.trim();
-        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-          try {
-            imagesToSend = JSON.parse(trimmed);
-          } catch (e) {
-            imagesToSend = [trimmed];
-          }
-        } else if (trimmed.includes(',')) {
-          // Breaks "url1,url2,url3" into distinct array items
-          imagesToSend = trimmed.split(',').map(u => u.trim()).filter(Boolean);
-        } else {
-          imagesToSend = [trimmed];
-        }
-      }
-
-      if (imagesToSend.length === 0) {
-        imagesToSend = [replyImage];
-      }
-
-      // Dynamic Limit: Send 1 up to maximum 6 images
-      imagesToSend = imagesToSend.slice(0, 6);
-    }
-    console.log(`[DISPATCHING ${imagesToSend.length} PRODUCT IMAGES]:`, imagesToSend);
-
-    // 1. Send clean text reply first
-    if (replyText) {
-      await sendMetaReply(integration.access_token, integration.page_id, senderId, replyText);
-    }
-
-    // 2. Loop and send each image individually to Messenger with explicit terminal logging
-    for (let i = 0; i < imagesToSend.length; i++) {
-      const imgUrl = imagesToSend[i];
-      const cleanUrl = typeof imgUrl === 'string' ? imgUrl : (imgUrl?.src || imgUrl?.url);
-
-      if (cleanUrl && cleanUrl.startsWith('http')) {
-        try {
-          const res = await fetch(`https://graph.facebook.com/v19.0/me/messages?access_token=${integration.access_token}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              recipient: { id: senderId },
-              message: {
-                attachment: {
-                  type: 'image',
-                  payload: { url: cleanUrl, is_reusable: true }
-                }
-              }
-            })
-          });
-
-          const metaData = await res.json();
-          if (res.ok) {
-            console.log(`[META GRAPH API SUCCESS - IMAGE ${i + 1}/${imagesToSend.length}]:`, metaData);
+    // B. MESSENGER / INSTAGRAM
+    if (body.object === 'page' || body.object === 'instagram') {
+      const isInstagramObject = body.object === 'instagram';
+      for (const entry of body.entry || []) {
+        const entryId = entry.id;
+        let events = [];
+        if (Array.isArray(entry.messaging)) events = entry.messaging;
+        else if (Array.isArray(entry.changes)) events = entry.changes.filter((c) => c.field === 'messages' && c.value).map((c) => c.value);
+        if (events.length === 0) continue;
+        for (const evt of events) {
+          if (evt.message?.is_echo) continue;
+          if (!evt.message && !evt.postback) continue;
+          const platformMessageId = evt.message?.mid || evt.postback?.mid || null;
+          if (platformMessageId && (await checkAndMarkProcessed(platformMessageId))) continue;
+          const senderId = evt.sender?.id;
+          const recipientId = evt.recipient?.id;
+          if (!senderId) { await unmarkProcessed(platformMessageId); continue; }
+          let messageText = evt.message?.text || evt.postback?.title || evt.postback?.payload || evt.message?.quick_reply?.payload || '';
+          const attachments = Array.isArray(evt.message?.attachments) ? evt.message.attachments : [];
+          const imageAtt = attachments.find((a) => a.type === 'image');
+          const imageUrl = imageAtt?.payload?.url || null;
+          const audioAtt = attachments.find((a) => a.type === 'audio');
+          const audioUrl = audioAtt?.payload?.url || null;
+          const videoAtt = attachments.find((a) => a.type === 'video');
+          if (!messageText && !imageUrl && !audioUrl && !videoAtt) { if (attachments.length > 0) messageText = `[${attachments[0].type}]`; else { await unmarkProcessed(platformMessageId); continue; } }
+          if (videoAtt && !messageText) messageText = '[Video]';
+          let integration = null;
+          let targetPlatform = 'messenger';
+          if (isInstagramObject) {
+            integration = await findIntegration('instagram', [recipientId, entryId]);
+            targetPlatform = 'instagram';
           } else {
-            console.error(`[META GRAPH API ERROR - IMAGE ${i + 1}]:`, metaData);
+            integration = await findIntegrationForPageObject([recipientId, entryId]);
+            if (integration) targetPlatform = integration.platform;
           }
-
-          // 350ms pause to preserve image order in Messenger
-          await new Promise(res => setTimeout(res, 350));
-        } catch (imgErr) {
-          console.error(`[IMAGE SEND FAILED - IMAGE ${i + 1}]:`, imgErr.message);
+          if (!integration) { console.warn(`[DROPPED] No integration for recipient=${recipientId} entry=${entryId}`); await unmarkProcessed(platformMessageId); continue; }
+          const displayName = senderId;
+          try {
+            await enqueueInboundEvent({ platform: targetPlatform, orgId: integration.org_id, integrationId: integration.id, senderId, customerName: displayName, messageText, imageUrl, audioUrl, audioMediaId: null, platformMessageId, rawEvent: { entryId } });
+          } catch (e) {
+            console.error('[ENQUEUE FAIL] Messenger/IG, unmarking:', e.message);
+            await unmarkProcessed(platformMessageId);
+          }
         }
       }
     }
-          // 7. Save outgoing message
-          if (conv) {
-            await supabase.from('messages').insert({
-  conversation_id: conv.id,
-  org_id: integration.org_id,           // <--- এই লাইনটি যোগ করুন
-  sender: 'bot',
-  content: replyText,
-  created_at: new Date().toISOString()
-});
-            await supabase
-              .from('conversations')
-              .update({ last_message: replyText, updated_at: new Date() })
-              .eq('id', conv.id);
-          }
-
-          // 8. Dynamic Order Creation (Messenger & Instagram)
-          if (aiResponse && aiResponse.orderData) {
-            const orderData = aiResponse.orderData;
-            const generatedOrderId = `ORD-${Date.now().toString().slice(-6)}`;
-
-            const finalCustomerName = 
-              orderData.customer_name || 
-              orderData.customerName || 
-              orderData.name || 
-              orderData.fullName || 
-              'Valued Customer';
-
-            const finalPhone = 
-              orderData.phone_number || 
-              orderData.phone || 
-              orderData.customer_phone || 
-              null;
-
-            const finalAddress = 
-              orderData.delivery_address || 
-              orderData.address || 
-              orderData.shipping_address || 
-              null;
-
-            const quantity = parseInt(orderData.product_quantity || orderData.quantity || 1, 10);
-            const finalTotal = parseFloat(orderData.totalPrice || orderData.total_amount || 0);
-            const deliveryCharge = parseFloat(orderData.delivery_charge || 0);
-
-            const coreKeys = new Set([
-              'customer_name', 'customerName', 'name', 'fullName',
-              'phone_number', 'phone', 'customer_phone',
-              'delivery_address', 'address', 'shipping_address',
-              'product_quantity', 'quantity',
-              'product_title', 'product_name', 'products', 'orderedProducts',
-              'totalPrice', 'total_amount', 'delivery_charge'
-            ]);
-
-            const dynamicCustomDetails = {};
-            const variantSpecs = [];
-
-            Object.entries(orderData).forEach(([key, value]) => {
-              if (!coreKeys.has(key) && value !== null && value !== undefined) {
-                dynamicCustomDetails[key] = value;
-                if (key !== 'delivery_zone' && key !== 'currency') {
-                  variantSpecs.push(`${key}: ${value}`);
-                }
-              }
-            });
-
-            let finalProducts = orderData.product_title || orderData.product_name || orderData.products;
-            if (!finalProducts) {
-              const fallbackName = (Array.isArray(products) && products.length > 0)
-                ? (products[0].title || products[0].name)
-                : 'Ordered Product';
-              const variantSuffix = variantSpecs.length > 0 ? ` (${variantSpecs.join(', ')})` : '';
-              finalProducts = `${quantity}x ${fallbackName}${variantSuffix}`;
-            }
-
-            const { data: savedOrder, error: orderInsertErr } = await supabase
-              .from('orders')
-              .insert([{
-                org_id: integration.org_id,
-                order_id: generatedOrderId,
-                customer_name: finalCustomerName,
-                customer_phone: finalPhone,
-                address: finalAddress,
-                products: finalProducts,
-                total_amount: finalTotal,
-                status: 'pending',
-                custom_details: dynamicCustomDetails,
-                delivery_charge: deliveryCharge
-              }])
-              .select();
-
-            if (orderInsertErr) {
-              console.error('[DATABASE ORDER INSERT ERROR]:', orderInsertErr);
-            } else {
-              console.log('[DATABASE ORDER CREATED SUCCESS]:', savedOrder);
-            }
-
-            try {
-              await syncOrderToShopify(integration.org_id, aiResponse.orderData);
-            } catch (shopifyErr) {
-              console.warn('[SHOPIFY SYNC WARNING]:', shopifyErr.message);
-            }
-
-            try {
-              const alertMsg = "🛍️ New Order Received (" + targetPlatform + ")!\n" +
-                "🆔 Order: " + generatedOrderId + "\n" +
-                "👤 Customer: " + finalCustomerName + "\n" +
-                "📞 Phone: " + (finalPhone || 'N/A') + "\n" +
-                "📦 Items: " + finalProducts + "\n" +
-                "💰 Total: " + finalTotal;
-
-              await sendAlertToChannels(
-                integration.org_id,
-                'notifyOnOrderUpdate',
-                alertMsg
-              );
-            } catch (alertErr) {
-              console.warn('[ALERT CHANNELS WARNING]:', alertErr.message);
-            }
-          }
-        } catch (err) {
-          console.error('[WEBHOOK PROCESSING ERROR]:', err.message);
-        }
-      }
-    }
+  } catch (err) {
+    console.error('[WEBHOOK CONTROLLER ERROR]:', err.message);
   }
 };
-// ==========================================
-// SHOPIFY MANDATORY GDPR COMPLIANCE WEBHOOKS
-// ==========================================
+export const handleWebhook = handleMetaWebhook;
 
-// 1. GDPR: Customers Data Request
+// ─── 6. GDPR ───
 export const handleCustomerDataRequest = async (req, res) => {
-  try {
-    const { shop_domain, customer } = req.body;
-    console.log(`[GDPR] Customer data request for ${customer?.email || 'Customer'} on ${shop_domain}`);
-    return res.status(200).json({ success: true, message: 'Data request logged' });
-  } catch (err) {
-    console.error('[GDPR Error] Customer Data Request:', err);
-    return res.status(200).send('OK');
-  }
+  try { console.log(`[GDPR] Customer data request for ${req.body?.customer?.email || 'Customer'}`); return res.status(200).json({ success: true }); } catch { return res.status(200).send('OK'); }
 };
-
-// 2. GDPR: Customers Redact (Delete Customer Data)
 export const handleCustomerRedact = async (req, res) => {
-  try {
-    const { shop_domain, customer } = req.body;
-    console.log(`[GDPR] Customer redact request for ${customer?.email || 'Customer'} on ${shop_domain}`);
-    return res.status(200).json({ success: true, message: 'Customer redact processed' });
-  } catch (err) {
-    console.error('[GDPR Error] Customer Redact:', err);
-    return res.status(200).send('OK');
-  }
+  try { console.log(`[GDPR] Customer redact for ${req.body?.customer?.email || 'Customer'}`); return res.status(200).json({ success: true }); } catch { return res.status(200).send('OK'); }
 };
-
-// 3. GDPR: Shop Redact (Delete Store Data after 48 hours)
 export const handleShopRedact = async (req, res) => {
   try {
-    const { shop_domain } = req.body;
-    console.log(`[GDPR] Shop redact request for ${shop_domain}`);
-
-    // Update integration status to disconnected
-    await supabase
-      .from('integrations')
-      .update({ status: 'disconnected', access_token: null })
-      .ilike('page_id', `%${shop_domain}%`);
-
-    return res.status(200).json({ success: true, message: 'Shop data cleaned' });
-  } catch (err) {
-    console.error('[GDPR Error] Shop Redact:', err);
-    return res.status(200).send('OK');
-  }
+    const shopDomain = req.body?.shop_domain || req.body?.shopDomain || '';
+    console.log(`[GDPR] Shop redact for ${shopDomain}`);
+    // page_id diye shop_domain khujbo na — vul chilo. credentials e khuji.
+    if (shopDomain) {
+      const { data: list } = await supabase.from('integrations').select('*');
+      for (const integ of list || []) {
+        const credShop = integ.credentials?.shop_domain || integ.credentials?.shopDomain || integ.credentials?.shop || '';
+        if (credShop && String(credShop).includes(shopDomain)) {
+          await supabase.from('integrations').update({ status: 'disconnected', is_connected: false }).eq('id', integ.id);
+        }
+      }
+    }
+    return res.status(200).json({ success: true });
+  } catch (e) { console.error('[GDPR Error] Shop Redact:', e.message); return res.status(200).send('OK'); }
 };

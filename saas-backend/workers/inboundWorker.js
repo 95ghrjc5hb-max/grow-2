@@ -8,7 +8,7 @@ import { checkAndIncrementMetaUsage } from '../services/usageService.js';
 import { getNotificationSettings } from '../services/settingsService.js';
 import { createShopifyOrder } from '../services/shopifyService.js';
 
-// --- Helper: Send Notification to Slack & Discord (using your actual settingsService.js) ---
+// --- Helper: Send Notification to Slack & Discord ---
 const sendAlertToChannels = async (orgId, eventType, textMessage) => {
   try {
     const settings = await getNotificationSettings(orgId);
@@ -35,14 +35,14 @@ const sendAlertToChannels = async (orgId, eventType, textMessage) => {
   }
 };
 
-// --- Helper: Safe Message Insert (falls back gracefully if status column is missing) ---
+// --- Helper: Safe Message Insert (falls back gracefully if optional columns are missing) ---
 const insertMessageSafe = async (payload) => {
   const { data, error } = await supabase.from('messages').insert(payload).select('id').single();
   if (!error) return data;
 
-  if (error.message && error.message.includes('status')) {
-    const { status, ...withoutStatus } = payload;
-    const retry = await supabase.from('messages').insert(withoutStatus).select('id').single();
+  if (error.message && (error.message.includes('status') || error.message.includes('image_url'))) {
+    const { status, image_url, ...minimalPayload } = payload;
+    const retry = await supabase.from('messages').insert(minimalPayload).select('id').single();
     if (!retry.error) return retry.data;
     console.error('[MSG INSERT ERROR]', retry.error.message);
     return null;
@@ -73,6 +73,7 @@ const getOrCreateConversation = async (orgId, channel, customerId, customerName,
         .from('conversations')
         .update({
           last_message: initialMessage,
+          message_count: (conv.message_count || 0) + 1,
           updated_at: new Date().toISOString(),
         })
         .eq('id', conv.id);
@@ -89,14 +90,13 @@ const getOrCreateConversation = async (orgId, channel, customerId, customerName,
         last_message: initialMessage,
         status: 'open',
         ai_active: true,
-        message_count: 0,
+        message_count: 1,
         updated_at: new Date().toISOString(),
       })
       .select()
       .single();
 
     if (createError) {
-      // Race condition guard if two jobs create the thread simultaneously
       const { data: retryConv } = await supabase
         .from('conversations')
         .select('*')
@@ -115,7 +115,7 @@ const getOrCreateConversation = async (orgId, channel, customerId, customerName,
   }
 };
 
-// --- Helper: Sync Order to Shopify ---
+// --- Helper: Sync Order to Shopify (Reads from credentials JSONB) ---
 const syncOrderToShopify = async (orgId, orderData) => {
   try {
     const { data: shopifyInt } = await supabase
@@ -123,19 +123,23 @@ const syncOrderToShopify = async (orgId, orderData) => {
       .select('*')
       .eq('org_id', orgId)
       .eq('platform', 'shopify')
-      .eq('status', 'connected')
       .limit(1)
       .maybeSingle();
 
-    if (shopifyInt && shopifyInt.access_token) {
-      const shopDomain =
-        shopifyInt.shop_domain ||
-        shopifyInt.metadata?.shop_domain ||
-        shopifyInt.metadata?.shopDomain ||
-        shopifyInt.account_name;
-      if (shopDomain) {
-        await createShopifyOrder(shopDomain, shopifyInt.access_token, orderData);
-      }
+    if (!shopifyInt || shopifyInt.is_connected === false || shopifyInt.status === 'disconnected') {
+      return;
+    }
+
+    const creds = shopifyInt.credentials || {};
+    const accessToken = shopifyInt.access_token || creds.access_token || creds.accessToken;
+    const shopDomain =
+      creds.shop_domain ||
+      creds.shopDomain ||
+      creds.shop ||
+      shopifyInt.page_id;
+
+    if (shopDomain && accessToken) {
+      await createShopifyOrder(shopDomain, accessToken, orderData);
     }
   } catch (err) {
     console.warn('[SHOPIFY SYNC WARNING]:', err.message);
@@ -147,12 +151,18 @@ const resolveWhatsAppAudioUrl = async (orgId, integrationId, audioMediaId) => {
   try {
     const { data: integration } = await supabase
       .from('integrations')
-      .select('access_token')
+      .select('access_token, credentials')
       .eq('org_id', orgId)
       .eq('id', integrationId)
       .maybeSingle();
 
-    const token = integration?.access_token || process.env.META_SYSTEM_USER_TOKEN;
+    const creds = integration?.credentials || {};
+    const token =
+      integration?.access_token ||
+      creds.access_token ||
+      creds.accessToken ||
+      process.env.META_SYSTEM_USER_TOKEN;
+
     if (!token) return null;
 
     const mediaRes = await fetch(`https://graph.facebook.com/v21.0/${audioMediaId}`, {
@@ -203,13 +213,15 @@ export const inboundWorker = new Worker(
     let resolvedAudioUrl = audioUrl || null;
 
     // 2. Resolve Audio Media ID (for WhatsApp voice notes) & Transcribe with Groq
-    if (!resolvedAudioUrl && audioMediaId && !finalMessageText) {
+    const isVoicePlaceholder = !finalMessageText || finalMessageText === '[Voice message]';
+    if (!resolvedAudioUrl && audioMediaId && isVoicePlaceholder) {
       resolvedAudioUrl = await resolveWhatsAppAudioUrl(orgId, integrationId, audioMediaId);
     }
 
-    if (resolvedAudioUrl && !finalMessageText) {
+    if (resolvedAudioUrl && isVoicePlaceholder) {
       try {
-        finalMessageText = await transcribeAudioWithGroq(resolvedAudioUrl);
+        const transcribed = await transcribeAudioWithGroq(resolvedAudioUrl);
+        if (transcribed) finalMessageText = transcribed;
       } catch (err) {
         console.error('[AUDIO TRANSCRIBE ERROR]:', err.message);
       }
@@ -225,8 +237,8 @@ export const inboundWorker = new Worker(
       orgId,
       platform,
       senderId,
-      customerName || `${platform} User`,
-      finalMessageText || '[Customer sent an image]'
+      customerName || senderId,
+      finalMessageText || '[Image]'
     );
 
     if (!conv) {
@@ -238,8 +250,9 @@ export const inboundWorker = new Worker(
       conversation_id: conv.id,
       org_id: orgId,
       sender: 'customer',
-      content: finalMessageText || '[Customer sent an image]',
+      content: finalMessageText || '[Image]',
       platform_message_id: platformMessageId || null,
+      image_url: imageUrl || null,
       status: 'received',
       created_at: new Date().toISOString(),
     });
@@ -263,7 +276,6 @@ export const inboundWorker = new Worker(
       .order('created_at', { ascending: false })
       .limit(10);
 
-    // Dual-format history so aiAgentService works with both role/content and direction/message
     const conversationHistory = (chatHistory || []).reverse().map((m) => ({
       role: m.sender === 'customer' ? 'user' : 'assistant',
       content: m.content || '',
@@ -271,7 +283,7 @@ export const inboundWorker = new Worker(
       message: m.content || '',
     }));
 
-    // 7. Check Usage Limits (fail-closed on unexpected error) & Call AI Agent
+    // 7. Check Usage Limits & Call AI Agent
     let usage = { allowed: true };
     try {
       usage = await checkAndIncrementMetaUsage(orgId, senderId);
@@ -313,7 +325,6 @@ export const inboundWorker = new Worker(
         ? aiResponse
         : aiResponse?.reply || 'Sorry, I could not process your request.';
 
-    // Clean raw Supabase storage URLs from text reply (from your webhookController.js)
     if (replyText) {
       replyText = replyText
         .replace(/•?\s*Image\s*\d*:\s*https?:\/\/\S+/gi, '')
@@ -327,7 +338,7 @@ export const inboundWorker = new Worker(
       const payload =
         platform === 'whatsapp'
           ? { type: 'text', text: { body: replyText } }
-          : replyText;
+          : { text: replyText };
 
       const savedMsg = await insertMessageSafe({
         conversation_id: conv.id,
@@ -357,7 +368,7 @@ export const inboundWorker = new Worker(
         .eq('id', conv.id);
     }
 
-    // 10. Enqueue Product Images (1 to max 6 images, no wrong-product fallback)
+    // 10. Enqueue Product Images (1 to max 6 images, only if matched in DB)
     const replyImage = typeof aiResponse === 'object' ? aiResponse?.image_url : null;
     if (replyImage) {
       const matchedProd = (products || []).find(
@@ -367,60 +378,64 @@ export const inboundWorker = new Worker(
           (Array.isArray(p.images) && p.images.includes(replyImage))
       );
 
-      let imagesToSend = [];
-      const rawImages = matchedProd ? matchedProd.images || matchedProd.image_url || replyImage : replyImage;
+      if (!matchedProd) {
+        console.warn(`[IMAGE] AI returned image not found in store products, skipping: ${replyImage}`);
+      } else {
+        let imagesToSend = [];
+        const rawImages = matchedProd.images || matchedProd.image_url || replyImage;
 
-      if (Array.isArray(rawImages)) {
-        imagesToSend = rawImages;
-      } else if (typeof rawImages === 'string') {
-        const trimmed = rawImages.trim();
-        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-          try {
-            imagesToSend = JSON.parse(trimmed);
-          } catch (e) {
+        if (Array.isArray(rawImages)) {
+          imagesToSend = rawImages;
+        } else if (typeof rawImages === 'string') {
+          const trimmed = rawImages.trim();
+          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            try {
+              imagesToSend = JSON.parse(trimmed);
+            } catch (e) {
+              imagesToSend = [trimmed];
+            }
+          } else if (trimmed.includes(',')) {
+            imagesToSend = trimmed.split(',').map((u) => u.trim()).filter(Boolean);
+          } else {
             imagesToSend = [trimmed];
           }
-        } else if (trimmed.includes(',')) {
-          imagesToSend = trimmed.split(',').map((u) => u.trim()).filter(Boolean);
-        } else {
-          imagesToSend = [trimmed];
         }
-      }
 
-      imagesToSend = imagesToSend.slice(0, 6);
+        imagesToSend = imagesToSend.slice(0, 6);
 
-      for (let i = 0; i < imagesToSend.length; i++) {
-        const imgUrl = imagesToSend[i];
-        const cleanUrl = typeof imgUrl === 'string' ? imgUrl : imgUrl?.src || imgUrl?.url;
+        for (let i = 0; i < imagesToSend.length; i++) {
+          const imgUrl = imagesToSend[i];
+          const cleanUrl = typeof imgUrl === 'string' ? imgUrl : imgUrl?.src || imgUrl?.url;
 
-        if (cleanUrl && cleanUrl.startsWith('http')) {
-          const imagePayload =
-            platform === 'whatsapp'
-              ? { type: 'image', image: { link: cleanUrl } }
-              : {
-                  attachment: {
-                    type: 'image',
-                    payload: { url: cleanUrl, is_reusable: true },
-                  },
-                };
+          if (cleanUrl && cleanUrl.startsWith('http')) {
+            const imagePayload =
+              platform === 'whatsapp'
+                ? { type: 'image', image: { link: cleanUrl } }
+                : {
+                    attachment: {
+                      type: 'image',
+                      payload: { url: cleanUrl, is_reusable: true },
+                    },
+                  };
 
-          await enqueueOutboundMessage({
-            platform,
-            orgId,
-            integrationId,
-            recipientId: senderId,
-            messagePayload: imagePayload,
-            conversationId: conv.id,
-            senderType: 'bot',
-            isHandoverMessage: isHandover,
-            priority: 2,
-            delay: (i + 1) * 350,
-          });
+            await enqueueOutboundMessage({
+              platform,
+              orgId,
+              integrationId,
+              recipientId: senderId,
+              messagePayload: imagePayload,
+              conversationId: conv.id,
+              senderType: 'bot',
+              isHandoverMessage: isHandover,
+              priority: 2,
+              delay: (i + 1) * 350,
+            });
+          }
         }
       }
     }
 
-    // 11. Dynamic Order Creation (Collision-free Order ID)
+    // 11. Dynamic Order Creation
     if (aiResponse && aiResponse.orderData) {
       const orderData = aiResponse.orderData;
       const generatedOrderId = `ORD-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -473,7 +488,7 @@ export const inboundWorker = new Worker(
         finalProducts = `${quantity}x ${fallbackName}${variantSuffix}`;
       }
 
-      await supabase.from('orders').insert([
+      const { error: orderInsertErr } = await supabase.from('orders').insert([
         {
           org_id: orgId,
           order_id: generatedOrderId,
@@ -487,6 +502,10 @@ export const inboundWorker = new Worker(
           delivery_charge: deliveryCharge,
         },
       ]);
+
+      if (orderInsertErr) {
+        console.error('[ORDER INSERT ERROR]:', orderInsertErr.message);
+      }
 
       try {
         await syncOrderToShopify(orgId, orderData);

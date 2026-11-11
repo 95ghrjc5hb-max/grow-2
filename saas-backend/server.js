@@ -28,6 +28,7 @@ import lemonSqueezyRoutes from './routes/lemonSqueezyRoutes.js';
 import shopifyRoutes from './routes/shopifyRoutes.js';
 import whatsappTemplateRoutes from './routes/whatsappTemplateRoutes.js';
 import './workers/outboundWorker.js';
+import './workers/inboundWorker.js';
 // Setup paths for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

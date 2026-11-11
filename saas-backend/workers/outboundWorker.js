@@ -1,6 +1,6 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import axios from 'axios';
-import { redisConnection } from '../config/queue.js';
+import { redisWorkerConnection } from '../config/queue.js';
 import { supabase } from '../config/supabase.js';
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
@@ -10,7 +10,7 @@ const PERMANENT_META_ERROR_CODES = new Set([
   131047, 131030, 131031, 132000, 131026, 131051, 131042, 10, 200,
 ]);
 
-// শুধুমাত্র টোকেন নষ্ট বা মেয়াদোত্তীর্ণ হলেই ইনটিগ্রেশন needs_reauth হবে
+// শুধুমাত্র টোকেন নষ্ট বা মেয়াদোত্তীর্ণ হলেই ইনটিগ্রেশন needs_reauth হবে
 const AUTH_ERROR_CODES = new Set([190, 191, 102]);
 
 // Meta rate limit + temporary throttling
@@ -18,6 +18,25 @@ const RETRYABLE_META_ERROR_CODES = new Set([130429, 80007, 4, 17, 32, 613]);
 const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+/**
+ * Safely reads a property from top-level integration row OR inside credentials JSONB
+ */
+function getIntegrationField(integration, keys) {
+  if (!integration) return null;
+  for (const k of keys) {
+    if (integration[k] !== undefined && integration[k] !== null && integration[k] !== '') {
+      return integration[k];
+    }
+  }
+  const creds = integration.credentials || {};
+  for (const k of keys) {
+    if (creds[k] !== undefined && creds[k] !== null && creds[k] !== '') {
+      return creds[k];
+    }
+  }
+  return null;
+}
 
 function normalizeMessengerPayload(messagePayload) {
   if (!messagePayload) return { text: '' };
@@ -73,20 +92,18 @@ function normalizeWhatsAppPayload(messagePayload) {
 
 async function markIntegrationNeedsReauth(orgId, integrationId, reason) {
   try {
+    // Directly updates confirmed columns (status, updated_at) without failing on non-existent last_error
     const { error } = await supabase
       .from('integrations')
-      .update({ status: 'needs_reauth', last_error: reason, updated_at: new Date().toISOString() })
+      .update({ status: 'needs_reauth', updated_at: new Date().toISOString() })
       .eq('org_id', orgId)
       .eq('id', integrationId);
 
     if (error) {
-      await supabase
-        .from('integrations')
-        .update({ status: 'needs_reauth', updated_at: new Date().toISOString() })
-        .eq('org_id', orgId)
-        .eq('id', integrationId);
+      console.error(`[AUTH] DB warning while marking needs_reauth for ${integrationId}: ${error.message}`);
+    } else {
+      console.error(`[AUTH] Integration ${integrationId} marked needs_reauth: ${reason}`);
     }
-    console.error(`[AUTH] Integration ${integrationId} marked needs_reauth: ${reason}`);
   } catch (e) {
     console.error(`[AUTH] Failed to mark needs_reauth: ${e.message}`);
   }
@@ -97,7 +114,6 @@ async function updateOutboundMessageStatus(messageId, patch) {
   try {
     const { error } = await supabase.from('messages').update(patch).eq('id', messageId);
     if (error) {
-      // যদি নতুন কলাম (যেমন sent_at বা error) এখনও মাইগ্রেট না হয়ে থাকে, তবে শুধু platform_message_id আপডেট করবে
       if (patch.platform_message_id) {
         await supabase
           .from('messages')
@@ -160,6 +176,7 @@ export const outboundWorker = new Worker(
       conversationId,
       senderType = 'bot',
       isHandoverMessage = false,
+      bypassHumanTakeover = false,
     } = job.data;
 
     if (!platform || !orgId || !integrationId || !recipientId || !messagePayload) {
@@ -169,16 +186,16 @@ export const outboundWorker = new Worker(
       );
     }
 
-    // 1. Idempotency Check: আগেই সেন্ড হয়ে থাকলে ডুপ্লিকেট পাঠাবে না
+    // 1. Idempotency Check: আগেই সেন্ড হয়ে থাকলে ডুপ্লিকেট পাঠাবে না
     const alreadySent = await checkAlreadySent(messageId);
     if (alreadySent) {
       console.log(`[WORKER] Job ${job.id} already sent, skipping duplicate. ProviderMsgId: ${alreadySent.providerMessageId}`);
       return { status: 'already_sent', providerMessageId: alreadySent.providerMessageId, platform };
     }
 
-    // 2. Human Takeover Guard: শুধুমাত্র সাধারণ বট রিপ্লাই হলে এবং হিউম্যান টেকওভার চালু থাকলে স্কিপ করবে
-    // (হিউম্যান এজেন্টের নিজের মেসেজ বা বটের শেষ হ্যান্ডওভার অ্যালার্ট মেসেজ ব্লক হবে না)
-    if (senderType === 'bot' && !isHandoverMessage && conversationId) {
+    // 2. Human Takeover Guard: সাধারণ বট রিপ্লাই হলে এবং হিউম্যান টেকওভার চালু থাকলে স্কিপ করবে
+    const shouldCheckTakeover = !bypassHumanTakeover && senderType === 'bot' && !isHandoverMessage && conversationId;
+    if (shouldCheckTakeover) {
       const humanTookOver = await checkHumanTakeover(conversationId);
       if (humanTookOver) {
         console.log(`[WORKER] Job ${job.id} skipped, human takeover active for conversation ${conversationId}`);
@@ -187,7 +204,7 @@ export const outboundWorker = new Worker(
       }
     }
 
-    // 3. Fetch Integration Credentials
+    // 3. Fetch Integration Credentials (reads both top-level and credentials JSONB)
     const { data: integration, error: dbError } = await supabase
       .from('integrations')
       .select('*')
@@ -200,7 +217,7 @@ export const outboundWorker = new Worker(
       throw new Error(`DB_FETCH_FAILED: ${dbError.message}`);
     }
 
-    const accessToken = integration?.access_token || integration?.accessToken;
+    const accessToken = getIntegrationField(integration, ['access_token', 'accessToken']);
 
     if (!integration || !accessToken) {
       console.error(`[WORKER] Integration missing or no token. Org:${orgId} Integration:${integrationId}`);
@@ -211,8 +228,7 @@ export const outboundWorker = new Worker(
     if (
       integration.status === 'disconnected' ||
       integration.status === 'needs_reauth' ||
-      integration.is_connected === false ||
-      integration.is_active === false
+      integration.is_connected === false
     ) {
       const stateReason = integration.status || 'disconnected';
       console.error(`[WORKER] Integration ${integrationId} is ${stateReason}, skipping send`);
@@ -220,7 +236,7 @@ export const outboundWorker = new Worker(
       throw new UnrecoverableError(`Integration ${integrationId} is ${stateReason}`);
     }
 
-    const expiresAt = integration.token_expires_at || integration.tokenExpiresAt;
+    const expiresAt = getIntegrationField(integration, ['token_expires_at', 'tokenExpiresAt']);
     if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
       console.error(`[WORKER] Token expired for Integration ${integrationId} at ${expiresAt}`);
       await markIntegrationNeedsReauth(orgId, integrationId, `Access token expired at ${expiresAt}`);
@@ -231,14 +247,15 @@ export const outboundWorker = new Worker(
     let endpoint = '';
     let requestPayload = {};
 
-    // 4. Platform & Dual-Auth Endpoint Construction
+    // 4. Platform & Dual-Auth Endpoint Construction (Top-level + credentials JSONB aware)
     if (platform === 'whatsapp') {
-      // আপনার webhookController অনুযায়ী phoneNumberId থাকে phone_number_id অথবা page_id কলামে
-      const phoneNumberId =
-        integration.phone_number_id ||
-        integration.phoneNumberId ||
-        integration.page_id ||
-        integration.pageId;
+      const phoneNumberId = getIntegrationField(integration, [
+        'phone_number_id',
+        'phoneNumberId',
+        'phone_number_ID',
+        'page_id',
+        'pageId',
+      ]);
 
       if (!phoneNumberId) {
         await updateOutboundMessageStatus(messageId, { status: 'failed', error: 'Missing phone_number_id' });
@@ -253,7 +270,7 @@ export const outboundWorker = new Worker(
         ...normalizeWhatsAppPayload(messagePayload),
       };
     } else if (platform === 'messenger') {
-      const pageId = integration.page_id || integration.pageId;
+      const pageId = getIntegrationField(integration, ['page_id', 'pageId']);
       if (!pageId) {
         await updateOutboundMessageStatus(messageId, { status: 'failed', error: 'Missing page_id' });
         throw new UnrecoverableError(`Messenger Integration ${integrationId} is missing page_id`);
@@ -265,16 +282,18 @@ export const outboundWorker = new Worker(
         message: normalizeMessengerPayload(messagePayload),
       };
     } else if (platform === 'instagram') {
-      const authType = integration.auth_type || integration.authType;
-      const igUserId =
-        integration.ig_user_id ||
-        integration.igUserId ||
-        integration.instagram_id ||
-        integration.account_id ||
-        integration.accountId;
-      const pageId = integration.page_id || integration.pageId;
+      const authType = getIntegrationField(integration, ['auth_type', 'authType']);
+      const igUserId = getIntegrationField(integration, [
+        'ig_user_id',
+        'igUserId',
+        'instagram_id',
+        'instagramId',
+        'account_id',
+        'accountId',
+      ]);
+      const pageId = getIntegrationField(integration, ['page_id', 'pageId']);
 
-      // আপনার metaGraphService.js অনুযায়ী IG Direct Token চেনার উপায়
+      // Direct Instagram Login detection (by auth_type in credentials OR IG token prefix)
       const isDirectIgToken =
         accessToken.startsWith('IG') || (accessToken.length < 180 && !accessToken.startsWith('EAA'));
 
@@ -323,6 +342,7 @@ export const outboundWorker = new Worker(
         await updateOutboundMessageStatus(messageId, {
           status: 'sent',
           platform_message_id: providerMessageId,
+          provider_message_id: providerMessageId,
           sent_at: new Date().toISOString(),
         });
       }
@@ -398,7 +418,7 @@ export const outboundWorker = new Worker(
     }
   },
   {
-    connection: redisConnection,
+    connection: redisWorkerConnection,
     concurrency: 10,
     limiter: { max: 20, duration: 1000 },
   }
