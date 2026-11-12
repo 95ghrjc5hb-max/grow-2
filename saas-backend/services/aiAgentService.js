@@ -7,6 +7,7 @@ import axios from 'axios';
 import { callGroqChat } from './groqProvider.js';
 import { callCerebrasChat } from './cerebrasProvider.js';
 import { callGeminiChat } from './geminiProvider.js';
+import { LANGUAGES } from '../config/languages.js';
 
 const UNIVERSAL_MASTER_RULE = `[GLOBAL LINGUISTIC & EMPATHY PROTOCOL]
 1. Universal Language Mirroring: Instantly analyze the user's input to determine their exact language, dialect, and script. Formulate your entire response in that EXACT same language naturally. Support ALL global languages seamlessly.
@@ -106,6 +107,15 @@ export const handleCustomerMessage = async ({
       .select('*')
       .eq('org_id', orgId)
       .maybeSingle();
+
+    const selectedLang = LANGUAGES.find((l) => l.code === (botConfig?.bot_language || 'auto'));
+    const isAutoLang = !selectedLang || selectedLang.code === 'auto';
+    const activeLanguageRule = isAutoLang
+      ? UNIVERSAL_MASTER_RULE
+      : `[GLOBAL LINGUISTIC & EMPATHY PROTOCOL]
+1. Forced Language Rule: You MUST reply ONLY in ${selectedLang.name} (${selectedLang.native}). Ignore customer's input language.
+2. Human Tone: Act as a highly empathetic, professional e-commerce store manager.
+3. Contextual Flow: Reply directly to the context without sounding robotic.`;
 
     let customSystemPrompt = botConfig?.system_prompt || "You are a professional e-commerce sales consultant.";
     if (botConfig?.restricted_topics?.length > 0) {
@@ -221,7 +231,7 @@ const img = mainImg ? ` | Image: ${mainImg}` : '';
 
     // Fixed dynamic schema string
     const dynamicSchemaStr = activeFields.map(f => `"${f.id}": "extracted ${f.label} or null"`).join(',\n    ');
-    const fullSystemPrompt = `${UNIVERSAL_MASTER_RULE}
+   const fullSystemPrompt = `${activeLanguageRule}
 
 Store Personality & Role:
 ${customSystemPrompt}
@@ -243,7 +253,7 @@ ${dynamicBulletTemplate}
    - Carefully inspect the "[ORDER CHECKOUT REQUIREMENTS]" list above (which contains all standard and custom merchant-defined fields).
    - Cross-reference the entire conversation history against this active requirements list to perform a "Gap Analysis".
    - NEVER ask the customer to repeat information they have already provided in previous messages.
-   - If the customer shows buying intent, acknowledge what information is already received and politely ask ONLY for the remaining missing field(s) (the gaps) in the customer's language.
+   
    - Adapt automatically to ANY merchant-defined custom field without hardcoded restrictions.
 
 2. INVENTORY & STOCK RULES:
@@ -252,7 +262,7 @@ ${dynamicBulletTemplate}
 3. MULTI-ITEM & MULTI-QUANTITY HANDLING:
    - Handle single items, multiple quantities, or multiple different products seamlessly.
    - Formula: Subtotal = Sum(Product Unit Price * Quantity).
-
+   - If the customer shows buying intent, acknowledge what information is already received and politely ask ONLY for the remaining missing field(s) (the gaps) in ${isAutoLang ? "the customer's language" : `${selectedLang.name} (${selectedLang.native})`}.
 4. DYNAMIC SHIPPING & TOTAL CALCULATION:
    - Match the customer's delivery address/city against "Available Delivery Zones".
    - Formula: Total Price = Subtotal + Matched Delivery Fee.
@@ -265,12 +275,12 @@ ${dynamicBulletTemplate}
 
    6. ANTI-HALLUCINATION & HUMAN HANDOFF PROTOCOL:
      - ZERO HALLUCINATION: If the user asks about a product NOT explicitly listed in the inventory, you MUST NOT invent or guess details.
-     - POLITE OFFER: Instead, apologize politely and ASK: "I couldn't find exact details for that in our current inventory. Would you like me to notify our human support team to assist you?" (DO NOT set "handover": true yet).
+    - POLITE OFFER: Instead, apologize politely and ASK (translated into ${isAutoLang ? "the customer's language" : `${selectedLang.name} (${selectedLang.native})`}): "I couldn't find exact details for that in our current inventory. Would you like me to notify our human support team to assist you?" (DO NOT set "handover": true yet).
      - STRICT ESCALATION RULES: NEVER prematurely give out the support contact for simple inquiries, greetings, typos, or general store browsing.
      - PROVIDING CONTACT INFO: ONLY provide the escalation contact ("${escalationContact}") if the customer explicitly asks for a phone number, email, page link, or direct contact details.
      - SEVERE ISSUES & REPEATED FAILURES: If the user reports a severe issue (order dispute, payment failure, refund), uses abusive language, or if a query is completely unresolved after 3+ consecutive failed attempts, politely calm them down and ASK if they want to speak to a human.
      - DE-ESCALATION: If the user declines the human agent offer (e.g., "No", "Nevermind", "Don't call them"), politely acknowledge and seamlessly return to assisting them with AI.
-     - THE NOTIFICATION TRIGGER: IF AND ONLY IF the user explicitly confirms (e.g., says "Yes", "Talk to agent", "Notify them"), YOU MUST set "handover": true in your JSON response and set your "reply" to: "I have notified our human support team. An agent will join this chat as soon as they are available. You can also reach us directly at: ${escalationContact}. In the meantime, is there anything else I can help you with?"
+     - THE NOTIFICATION TRIGGER: IF AND ONLY IF the user explicitly confirms (e.g., says "Yes", "Talk to agent", "Notify them"), YOU MUST set "handover": true in your JSON response and set your "reply" (translated into ${isAutoLang ? "the customer's language" : `${selectedLang.name} (${selectedLang.native})`}) to: "I have notified our human support team. An agent will join this chat as soon as they are available. You can also reach us directly at: ${escalationContact}. In the meantime, is there anything else I can help you with?"
      - DO NOT STOP CHATTING: You must continue to reply politely if the user asks further questions while waiting for the human agent.
 
   7. SPAM, TOXICITY & PRIVACY (GDPR) DEFENSE:
@@ -280,7 +290,7 @@ ${dynamicBulletTemplate}
 [RESPONSE FORMAT - STRICT JSON]
 Respond ONLY with valid JSON in this exact schema:
 {
- "reply": "Conversational reply strictly mirroring the customer's exact language, script, dialect, and tone (* bullets). Answer product questions accurately, handle order checkout details smoothly, and summarize orders. STRICT RULE: NEVER write or output raw image URLs/links inside this reply text under any circumstances.",
+ "reply": "Conversational reply strictly in ${isAutoLang ? "the customer's exact language, script, dialect, and tone" : `${selectedLang.name} (${selectedLang.native})`} (* bullets). Answer product questions accurately, handle order checkout details smoothly, and summarize orders. STRICT RULE: NEVER write or output raw image URLs/links inside this reply text under any circumstances.",
 "image_url": "CRITICAL UNIVERSAL VISUAL RULE: Return the main product image URL ONLY under two conditions: (1) The FIRST time a customer inquires about a specific product in the conversation, return its image_url along with details. (2) The customer expresses any intent to see pictures, photos, or visual appearances of a product in ANY language, alphabet, script, or dialect worldwide (e.g. single words, slang, or full sentences). DO NOT return image_url for greetings ('hi', 'hello') or during follow-up messages (such as asking price, stock, specs, delivery charges) if images were already sent earlier in the conversation history. Otherwise, strictly return null.",
   "orderData": null,
   "handover": false

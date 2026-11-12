@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Check, Trash2 } from 'lucide-react';
 import { Button } from '../ui/button';
+import { LANGUAGES } from '../../constants/languages';
 
 const PRESET_FIELDS = [
   { id: 'customer_name', label: 'Customer Name' },
@@ -18,6 +19,7 @@ export default function BotConfigModal({ isOpen, onClose, configForm, onSave }) 
   const [form, setForm] = useState({
     support_contact: '',
     system_prompt: '',
+    bot_language: 'auto',
   });
 
   const [selectedFields, setSelectedFields] = useState([]);
@@ -38,6 +40,7 @@ const [isAddingDelivery, setIsAddingDelivery] = useState(false);
       setForm({
         support_contact: configForm.support_contact || '',
         system_prompt: configForm.system_prompt || '',
+        bot_language: configForm.bot_language || 'auto',
       });
 
       if (Array.isArray(configForm.order_capture_fields) && configForm.order_capture_fields.length > 0) {
@@ -115,11 +118,12 @@ const handleRemoveDeliveryRule = (ruleId) => {
   setDeliveryRules(deliveryRules.filter((r) => r.id !== ruleId));
 };
   // Handle final submission to parent component
-  const handleSubmit = (e) => {
+ const handleSubmit = (e) => {
     e.preventDefault();
     onSave({
       support_contact: form.support_contact,
       system_prompt: form.system_prompt,
+      bot_language: form.bot_language || 'auto',
       order_capture_fields: selectedFields,
       delivery_rules: deliveryRules,
     });
@@ -170,6 +174,26 @@ const handleRemoveDeliveryRule = (ruleId) => {
               className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
             />
           </div>
+
+          {/* Bot Reply Language */}
+          <div>
+            <label className="text-xs text-slate-300 font-medium">Bot Reply Language</label>
+            <select
+              value={form.bot_language}
+              onChange={(e) => setForm({ ...form, bot_language: e.target.value })}
+              className="w-full mt-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500"
+            >
+              {LANGUAGES.map((lang) => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.code === 'auto' ? lang.name : `${lang.name} (${lang.native})`}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Select the language your bot will use to reply to customers, or Auto to match each customer's language.
+            </p>
+          </div>
+        
           
           {/* AI Order Capture Fields */}
           <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4 space-y-3">

@@ -22,6 +22,7 @@ exports.getBotConfig = async (req, res) => {
           llm_provider: 'Groq Cloud',
           model_name: 'llama-3.3-70b-versatile',
           api_key: '',
+          bot_language: 'auto',
           system_prompt: 'Use this product inventory dataset as the primary ground-truth knowledge base to reply to customer questions accurately and concisely.',
           order_capture_fields: [
             { id: "customer_name", label: "Customer Name", required: true },
@@ -57,11 +58,23 @@ exports.saveBotConfig = async (req, res) => {
       model_name,
       api_key,
       system_prompt,
-      order_capture_fields
+      order_capture_fields,
+      bot_language
     } = req.body;
 
     if (!system_prompt) {
       return res.status(400).json({ success: false, message: "System prompt is required" });
+    }
+
+    if (bot_language !== undefined) {
+      const { LANGUAGES } = await import('../config/languages.js');
+      const isValidLang =
+        typeof bot_language === 'string' &&
+        LANGUAGES.some((lang) => lang.code === bot_language.trim());
+
+      if (!isValidLang) {
+        return res.status(400).json({ success: false, message: 'Invalid bot_language code' });
+      }
     }
 
     const { data, error } = await supabase
@@ -73,6 +86,7 @@ exports.saveBotConfig = async (req, res) => {
         api_key: api_key ? api_key.trim() : null,
         system_prompt: system_prompt,
         order_capture_fields: Array.isArray(order_capture_fields) ? order_capture_fields : [],
+        ...(bot_language !== undefined ? { bot_language: bot_language.trim() } : {}),
         updated_at: new Date().toISOString()
       }, { onConflict: 'org_id' })
       .select()

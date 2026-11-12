@@ -32,11 +32,11 @@ export default function BotTraining() {
   const [configForm, setConfigForm] = useState({
     support_contact: '',
     system_prompt: '',
+    bot_language: 'auto',
     order_capture_fields: [],
     delivery_rules: [],
     currency_symbol: '$',
   });
-
   // 1. Define fetchData OUTSIDE so the whole file can use it
   const fetchData = async () => {
     try {
@@ -89,13 +89,18 @@ export default function BotTraining() {
 
       setProducts(supaProds || []);
 
-      // Fetch Bot Config
-      const { data: configs } = await supabase.from("bot_configs").select("*").limit(1);
+      // Fetch Bot Config scoped to active tenant org_id
+      let configQuery = supabase.from("bot_configs").select("*");
+      if (currentOrgId) {
+        configQuery = configQuery.eq("org_id", currentOrgId);
+      }
+      const { data: configs } = await configQuery.limit(1);
       if (configs && configs.length > 0) {
         setBotConfig(configs[0]);
         setConfigForm({
           support_contact: configs[0].support_contact || '',
           system_prompt: configs[0].system_prompt || '',
+          bot_language: configs[0].bot_language || 'auto',
           order_capture_fields: configs[0].order_capture_fields || [],
           delivery_rules: configs[0].delivery_rules || [],
           currency_symbol: configs[0].currency_symbol || '$',
@@ -268,17 +273,18 @@ const handleSaveProduct = async () => {
     setShowModal(true);
   };
 
-  const handleSaveConfig = async (formData) => {
+const handleSaveConfig = async (formData) => {
     try {
       const payload = {
         support_contact: formData.support_contact,
         system_prompt: formData.system_prompt,
+        bot_language: formData.bot_language || 'auto',
         order_capture_fields: formData.order_capture_fields || [],
         delivery_rules: formData.delivery_rules || [],
         currency_symbol: formData.currency_symbol || '$',
         org_id: userOrgId,
       };
-
+  
       if (botConfig && botConfig.id) {
         // UPDATE Existing Config
         const { data, error } = await supabase
@@ -300,12 +306,47 @@ const handleSaveProduct = async () => {
         if (data && data.length > 0) setBotConfig(data[0]);
       }
 
+      setConfigForm((prev) => ({ ...prev, ...payload }));
       toast({ title: "Bot configuration saved successfully!" });
       setShowConfigModal(false);
     } catch (error) {
       console.error("Save config error:", error);
       toast({
         title: "Failed to save configuration",
+        description: error.message || "Database error",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleLanguageChange = async (newLanguage) => {
+    try {
+      setConfigForm((prev) => ({ ...prev, bot_language: newLanguage }));
+
+      if (botConfig && botConfig.id) {
+        const { data, error } = await supabase
+          .from("bot_configs")
+          .update({ bot_language: newLanguage })
+          .eq("id", botConfig.id)
+          .select();
+
+        if (error) throw error;
+        if (data && data.length > 0) setBotConfig(data[0]);
+      } else {
+        const { data, error } = await supabase
+          .from("bot_configs")
+          .insert([{ org_id: userOrgId, bot_language: newLanguage }])
+          .select();
+
+        if (error) throw error;
+        if (data && data.length > 0) setBotConfig(data[0]);
+      }
+
+      toast({ title: "Bot reply language updated!" });
+    } catch (error) {
+      console.error("Language update error:", error);
+      toast({
+        title: "Failed to update language",
         description: error.message || "Database error",
         variant: "destructive",
       });
@@ -351,11 +392,12 @@ const handleSaveProduct = async () => {
         </div>
       </div>
 
-    {/* AI Config Banner Component */}
-        <AiConfigBanner
-  onConfigure={() => setShowConfigModal(true)}
-/>
-
+{/* AI Config Banner Component */}
+    <AiConfigBanner
+      language={configForm.bot_language || 'auto'}
+      onLanguageChange={handleLanguageChange}
+      onConfigure={() => setShowConfigModal(true)}
+    />
 
         {/* Product Table Component */}
         <ProductTable
