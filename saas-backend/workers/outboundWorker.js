@@ -193,14 +193,31 @@ export const outboundWorker = new Worker(
       return { status: 'already_sent', providerMessageId: alreadySent.providerMessageId, platform };
     }
 
-    // 2. Human Takeover Guard: সাধারণ বট রিপ্লাই হলে এবং হিউম্যান টেকওভার চালু থাকলে স্কিপ করবে
-    const shouldCheckTakeover = !bypassHumanTakeover && senderType === 'bot' && !isHandoverMessage && conversationId;
-    if (shouldCheckTakeover) {
-      const humanTookOver = await checkHumanTakeover(conversationId);
-      if (humanTookOver) {
-        console.log(`[WORKER] Job ${job.id} skipped, human takeover active for conversation ${conversationId}`);
-        await updateOutboundMessageStatus(messageId, { status: 'skipped', error: 'Human takeover active' });
-        return { status: 'skipped_human_takeover', conversationId };
+    // 2. Pause Guards: হিউম্যান এজেন্টের মেসেজ বা হ্যান্ডওভার মেসেজ বাইপাস করবে, শুধু সাধারণ বট রিপ্লাই চেক হবে
+    const shouldCheckPause = !bypassHumanTakeover && senderType === 'bot' && !isHandoverMessage;
+    if (shouldCheckPause) {
+      // 2A. Overall Store Pause Check (bot_configs.is_active)
+      const { data: botConfig } = await supabase
+        .from('bot_configs')
+        .select('is_active')
+        .eq('org_id', orgId)
+        .limit(1)
+        .maybeSingle();
+
+      if (botConfig && botConfig.is_active === false) {
+        console.log(`[WORKER] Job ${job.id} skipped, overall store AI is paused for org ${orgId}`);
+        await updateOutboundMessageStatus(messageId, { status: 'skipped', error: 'Overall store AI paused' });
+        return { status: 'skipped_overall_pause', orgId };
+      }
+
+      // 2B. Single Customer Pause Check (conversations.ai_active)
+      if (conversationId) {
+        const humanTookOver = await checkHumanTakeover(conversationId);
+        if (humanTookOver) {
+          console.log(`[WORKER] Job ${job.id} skipped, human takeover active for conversation ${conversationId}`);
+          await updateOutboundMessageStatus(messageId, { status: 'skipped', error: 'Human takeover active' });
+          return { status: 'skipped_human_takeover', conversationId };
+        }
       }
     }
 

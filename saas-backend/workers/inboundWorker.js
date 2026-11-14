@@ -176,6 +176,87 @@ const resolveWhatsAppAudioUrl = async (orgId, integrationId, audioMediaId) => {
   }
 };
 
+// --- Helper: Persist Incoming Customer Image to Supabase Storage (Permanent Public URL) ---
+const persistInboundImage = async (orgId, integrationId, platform, rawImageUrl) => {
+  if (!rawImageUrl) return null;
+  if (String(rawImageUrl).includes('supabase.co/storage')) return rawImageUrl;
+
+  try {
+    const { data: integration } = await supabase
+      .from('integrations')
+      .select('access_token, credentials')
+      .eq('org_id', orgId)
+      .eq('id', integrationId)
+      .maybeSingle();
+
+    const creds = integration?.credentials || {};
+    const token =
+      integration?.access_token ||
+      creds.access_token ||
+      creds.accessToken ||
+      process.env.META_SYSTEM_USER_TOKEN;
+
+    let downloadUrl = rawImageUrl;
+    const headers = {};
+
+    if (platform === 'whatsapp') {
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      // If webhook passed a WhatsApp Media ID instead of an http URL, resolve the download URL first
+      if (!String(rawImageUrl).startsWith('http')) {
+        if (!token) return null;
+        const mediaRes = await fetch(`https://graph.facebook.com/v21.0/${rawImageUrl}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const mediaData = await mediaRes.json();
+        if (!mediaData?.url) return null;
+        downloadUrl = mediaData.url;
+      }
+    }
+
+    if (!String(downloadUrl).startsWith('http')) return null;
+
+    const res = await fetch(downloadUrl, { headers });
+    if (!res.ok) return String(rawImageUrl).startsWith('http') ? rawImageUrl : null;
+
+    const contentType = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim().toLowerCase();
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(contentType)) {
+      return String(rawImageUrl).startsWith('http') ? rawImageUrl : null;
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // Max 5MB rule check
+    if (buffer.byteLength > 5 * 1024 * 1024) {
+      console.warn('[INBOUND IMAGE WARN] Customer image exceeds 5MB limit.');
+      return String(rawImageUrl).startsWith('http') ? rawImageUrl : null;
+    }
+
+    const ext = contentType === 'image/png' ? 'png' : contentType === 'image/webp' ? 'webp' : 'jpg';
+    const filePath = `${orgId}/inbound/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+
+    const { error: uploadErr } = await supabase.storage
+      .from('chat-media')
+      .upload(filePath, buffer, {
+        contentType: contentType === 'image/jpg' ? 'image/jpeg' : contentType,
+        upsert: false,
+      });
+
+    if (uploadErr) {
+      console.warn('[INBOUND IMAGE UPLOAD WARN]:', uploadErr.message);
+      return String(rawImageUrl).startsWith('http') ? rawImageUrl : null;
+    }
+
+    const { data: publicData } = supabase.storage.from('chat-media').getPublicUrl(filePath);
+    return publicData?.publicUrl || (String(rawImageUrl).startsWith('http') ? rawImageUrl : null);
+  } catch (err) {
+    console.warn('[INBOUND IMAGE PERSIST WARN]:', err.message);
+    return String(rawImageUrl).startsWith('http') ? rawImageUrl : null;
+  }
+};
+
 // ─── INBOUND WORKER ──────────────────────────────────────────────────────────
 
 export const inboundWorker = new Worker(
@@ -245,19 +326,35 @@ export const inboundWorker = new Worker(
       throw new Error('Failed to get or create conversation');
     }
 
-    // 4. Save Incoming Customer Message
+    // 4. Persist Incoming Customer Image (if any) & Save Incoming Customer Message
+    const persistedImageUrl = imageUrl
+      ? await persistInboundImage(orgId, integrationId, platform, imageUrl)
+      : null;
+
     await insertMessageSafe({
       conversation_id: conv.id,
       org_id: orgId,
       sender: 'customer',
       content: finalMessageText || '[Image]',
       platform_message_id: platformMessageId || null,
-      image_url: imageUrl || null,
+      image_url: persistedImageUrl,
       status: 'received',
       created_at: new Date().toISOString(),
     });
+   // 5A. Overall Store Pause Guard: Check bot_configs.is_active BEFORE products fetch & BEFORE usage check
+    const { data: botConfig } = await supabase
+      .from('bot_configs')
+      .select('is_active')
+      .eq('org_id', orgId)
+      .limit(1)
+      .maybeSingle();
 
-    // 5. Human Takeover Guard: Do not run AI if paused by a human agent in UnifiedInbox
+    if (botConfig && botConfig.is_active === false) {
+      console.log(`[OVERALL PAUSE] Store AI is OFF (bot_configs.is_active=false) for org ${orgId}. Skipping bot reply.`);
+      return { status: 'skipped', reason: 'overall_store_paused' };
+    }
+
+    // 5B. Single Customer Pause Guard: Do not run AI if paused for this conversation
     if (conv.ai_active === false) {
       console.log(`[AI PAUSED] Bot is paused by human agent for conversation ${conv.id}. Skipping bot reply.`);
       return { status: 'skipped', reason: 'human_takeover_active' };
@@ -305,7 +402,7 @@ export const inboundWorker = new Worker(
         orgId,
         storeProducts: products || [],
         conversationHistory,
-        imageUrl: imageUrl || null,
+        imageUrl: persistedImageUrl || imageUrl || null,
       });
     }
 
@@ -340,11 +437,19 @@ export const inboundWorker = new Worker(
           ? { type: 'text', text: { body: replyText } }
           : { text: replyText };
 
+      const botPrimaryImage =
+        typeof aiResponse === 'object' &&
+        typeof aiResponse?.image_url === 'string' &&
+        aiResponse.image_url.startsWith('http')
+          ? aiResponse.image_url
+          : null;
+
       const savedMsg = await insertMessageSafe({
         conversation_id: conv.id,
         org_id: orgId,
         sender: 'bot',
         content: replyText,
+        image_url: botPrimaryImage,
         status: 'queued',
         created_at: new Date().toISOString(),
       });

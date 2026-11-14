@@ -72,12 +72,12 @@ app.use(helmet());
 
 // 2. Safe Payload Limits (Prevent Heap Out-Of-Memory/DoS attacks)
 app.use(express.json({ 
-  limit: '2mb', 
+  limit: '10mb', 
   verify: (req, res, buf) => { 
     req.rawBody = buf; 
   } 
 }));
-app.use(express.urlencoded({ limit: '2mb', extended: true }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(morgan('dev'));
 
 // 3. Enterprise-Scale Dynamic Rate Limiting (1k Merchants + 10k Customers Ready)

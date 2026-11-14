@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { MessageCircle, Instagram, Phone, Send, Pause, Play, User, Tag, Search, RefreshCw, ShoppingBag, ArrowLeft } from "lucide-react";
+import { MessageCircle, Instagram, Phone, Send, Pause, Play, User, Tag, Search, RefreshCw, ShoppingBag, ArrowLeft, ImagePlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ChannelIcon from "@/components/shared/ChannelIcon";
@@ -16,7 +16,6 @@ const channelFilters = [
 
 // Dynamic API URL for production and local environment
 const API_BASE_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL;
-
 export default function UnifiedInbox() {
   const [conversations, setConversations] = useState([]);
   const [selectedConv, setSelectedConv] = useState(null);
@@ -25,7 +24,12 @@ export default function UnifiedInbox() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [storeAiActive, setStoreAiActive] = useState(true);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [lightboxImage, setLightboxImage] = useState(null);
+  const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
+  
 
   const getAuthHeaders = () => {
     // ১. সব জায়গা থেকে টোকেন খোঁজার চেষ্টা
@@ -63,7 +67,10 @@ export default function UnifiedInbox() {
 
       if (!res.ok) throw new Error("Failed to fetch conversations");
 
-      const data = await res.json();
+     const data = await res.json();
+      if (typeof data.store_ai_active === "boolean") {
+        setStoreAiActive(data.store_ai_active);
+      }
       const convArray = Array.isArray(data.data) ? data.data : data || [];
       setConversations(convArray);
 
@@ -183,42 +190,83 @@ export default function UnifiedInbox() {
     return matchFilter && matchSearch;
   });
 
-  // Outbound Send Handler with Optimistic UI & Rollback
-  const handleSend = async () => {
-    if (!newMessage.trim() || !selectedConv || sending) return;
+  // Rule 1: Strict Image File Validation (JPG, PNG, WEBP only, max 5MB)
+  const handleImageSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    const currentText = newMessage;
+    const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    if (!allowedTypes.includes(file.type.toLowerCase())) {
+      alert("Invalid file type! Only JPG, PNG, and WEBP images are allowed.");
+      e.target.value = "";
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Image is too large! Maximum allowed size is 5MB.");
+      e.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSelectedImage({
+        base64: reader.result,
+        mimeType: file.type.toLowerCase(),
+        previewUrl: reader.result,
+        name: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  // Outbound Send Handler (Text / Image / Image + Caption) with Optimistic UI & Rollback
+  const handleSend = async () => {
+    const trimmedText = newMessage.trim();
+    if ((!trimmedText && !selectedImage) || !selectedConv || sending) return;
+
+    if (trimmedText.length > 1024) {
+      alert("Caption/message cannot exceed 1024 characters (WhatsApp limit).");
+      return;
+    }
+
+    const currentText = trimmedText;
+    const currentImage = selectedImage;
+
     setNewMessage("");
+    setSelectedImage(null);
     setSending(true);
 
     const targetId = selectedConv.id || selectedConv._id;
-
-    const messagePayload = {
-      sender: "agent",
-      text: currentText,
-      time: new Date().toISOString(),
-    };
-
     const previousConversations = [...conversations];
     const previousSelectedConv = { ...selectedConv };
 
-    // আগের মেসেজগুলোর সাথে নতুন মেসেজটা ডাটাবেসের ফরম্যাটে যোগ করা হচ্ছে
+    const displayContent = currentText || "[Image]";
+    const sidebarLastMsg =
+      currentImage && currentText
+        ? `📷 ${currentText}`
+        : currentImage
+          ? "📷 [Image]"
+          : currentText;
+
     const updatedMessages = [
       ...(selectedConv.messages || []),
       {
         sender: "agent",
-        content: currentText, // 'text' এর বদলে ডাটাবেসের মতো 'content' হবে
-        created_at: new Date().toISOString() // 'time' এর বদলে 'created_at' হবে
-      }
+        content: displayContent,
+        image_url: currentImage ? currentImage.previewUrl : null,
+        created_at: new Date().toISOString(),
+      },
     ];
 
     const updatedConv = {
       ...selectedConv,
       messages: updatedMessages,
-      last_message: currentText,
+      last_message: sidebarLastMsg,
     };
 
-    // Immediate UI Update
+    // Immediate Optimistic UI Update
     setSelectedConv(updatedConv);
     setConversations((prev) =>
       prev.map((c) => ((c.id || c._id) === targetId ? updatedConv : c))
@@ -233,6 +281,8 @@ export default function UnifiedInbox() {
           customerPhone: selectedConv.customer_identifier,
           messageText: currentText,
           platform: selectedConv.channel,
+          imageBase64: currentImage ? currentImage.base64 : null,
+          imageMimeType: currentImage ? currentImage.mimeType : null,
         }),
       });
 
@@ -243,12 +293,31 @@ export default function UnifiedInbox() {
         throw new Error(responseData.error || "Failed to send message");
       }
 
+      // Sync saved message (with permanent Supabase image_url) into state if Realtime hasn't arrived yet
+      if (responseData.data?.id) {
+        const savedMsg = responseData.data;
+        setSelectedConv((prev) => {
+          if (!prev || (prev.id || prev._id) !== targetId) return prev;
+          const msgs = prev.messages || [];
+          if (msgs.some((m) => m.id === savedMsg.id)) return prev;
+          let replaced = false;
+          const nextMsgs = msgs.map((m) => {
+            if (!replaced && !m.id && m.sender === "agent") {
+              replaced = true;
+              return savedMsg;
+            }
+            return m;
+          });
+          return { ...prev, messages: nextMsgs };
+        });
+      }
     } catch (err) {
       console.error("Message send error:", err);
-      // Rollback UI on failure
+      // Rollback UI on failure (no duplicate saved)
       setSelectedConv(previousSelectedConv);
       setConversations(previousConversations);
       setNewMessage(currentText);
+      setSelectedImage(currentImage);
       alert(err.message || "Failed to send message. Please try again.");
     } finally {
       setSending(false);
@@ -289,6 +358,28 @@ export default function UnifiedInbox() {
       }
     };
 
+    // Toggle Overall Store AI state (bot_configs.is_active)
+    const toggleStoreAI = async () => {
+      const nextStoreState = !storeAiActive;
+      const prevStoreState = storeAiActive;
+
+      setStoreAiActive(nextStoreState);
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/conversations/store-pause`, {
+          method: "PATCH",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ is_active: nextStoreState }),
+        });
+
+        if (!res.ok) throw new Error("Store AI state update failed");
+      } catch (err) {
+        console.error("Store AI state sync failure:", err);
+        setStoreAiActive(prevStoreState);
+        alert("Could not update Store AI state. Rolling back.");
+      }
+    };
+
     if (loading) {
       return (
         <div className="flex items-center justify-center h-screen bg-[hsl(220,18%,9%)]">
@@ -302,17 +393,35 @@ export default function UnifiedInbox() {
         {/* Left Column: Conversation List */}
         <div className={`w-full md:w-80 border-r border-white/10 flex flex-col bg-[hsl(220,18%,9%)] shrink-0 ${selectedConv ? "hidden md:flex" : "flex"}`}>
           <div className="p-4 border-b border-white/10">
-            <div className="flex items-center justify-between mb-3">
+           <div className="flex items-center justify-between mb-3 gap-2">
               <h2 className="text-lg font-semibold text-white">Inbox</h2>
-              <Button
-                onClick={fetchConversations}
-                variant="ghost"
-                size="icon"
-                className="w-7 h-7 text-slate-400 hover:text-white hover:bg-white/5"
-                title="Refresh conversations"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  onClick={toggleStoreAI}
+                  size="sm"
+                  variant="outline"
+                  className={`h-7 px-2.5 text-xs font-medium gap-1.5 border transition-all ${
+                    storeAiActive
+                      ? "border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-amber-500/15 hover:text-amber-300 hover:border-amber-500/30"
+                      : "border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-teal-500/15 hover:text-teal-300 hover:border-teal-500/30"
+                  }`}
+                  title={storeAiActive ? "Click to pause AI for entire store" : "Click to resume AI for entire store"}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${storeAiActive ? "bg-teal-400 animate-pulse" : "bg-rose-400"}`} />
+                  {storeAiActive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                  <span>{storeAiActive ? "Store AI: ON" : "Store Paused"}</span>
+                </Button>
+
+                <Button
+                  onClick={fetchConversations}
+                  variant="ghost"
+                  size="icon"
+                  className="w-7 h-7 text-slate-400 hover:text-white hover:bg-white/5 shrink-0"
+                  title="Refresh conversations"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </Button>
+              </div>
             </div>
             <div className="relative mb-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
@@ -401,76 +510,154 @@ export default function UnifiedInbox() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+         <div className="flex items-center gap-1.5 shrink-0">
             <span
               className={`text-xs px-2 py-0.5 md:px-2.5 md:py-1 rounded-full font-medium ${
-                selectedConv.ai_active
-                  ? "bg-teal-500/10 text-teal-400 border border-teal-500/20"
-                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                !storeAiActive
+                  ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                  : selectedConv.ai_active
+                    ? "bg-teal-500/10 text-teal-400 border border-teal-500/20"
+                    : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
               }`}
             >
-              {selectedConv.ai_active ? "AI Active" : "Human"}
+              {!storeAiActive ? "Store Paused" : selectedConv.ai_active ? "AI Active" : "Human"}
             </span>
 
             <Button
               onClick={toggleAI}
+              disabled={!storeAiActive}
               size="sm"
               variant="outline"
               className={`h-7 px-2 text-xs gap-1 border shrink-0 ${
-                selectedConv.ai_active
-                  ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
-                  : "border-teal-500/30 text-teal-400 hover:bg-teal-500/10 hover:text-teal-300"
+                !storeAiActive
+                  ? "border-white/10 text-slate-500 opacity-50 cursor-not-allowed"
+                  : selectedConv.ai_active
+                    ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+                    : "border-teal-500/30 text-teal-400 hover:bg-teal-500/10 hover:text-teal-300"
               }`}
             >
-              {selectedConv.ai_active ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-              <span>{selectedConv.ai_active ? "Pause" : "Resume"}</span>
+              {!storeAiActive ? (
+                <>
+                  <Pause className="w-3 h-3" />
+                  <span>Store Paused</span>
+                </>
+              ) : (
+                <>
+                  {selectedConv.ai_active ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                  <span>{selectedConv.ai_active ? "Pause" : "Resume"}</span>
+                </>
+              )}
             </Button>
           </div>
         </div>
 
-              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+             <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
                 {!selectedConv.messages || selectedConv.messages.length === 0 ? (
                   <p className="text-center text-sm text-slate-500 py-12">No messages yet</p>
                 ) : (
-                  selectedConv.messages.map((msg, i) => (
-                    <div key={i} className={`flex ${msg.sender === "customer" ? "justify-start" : "justify-end"}`}>
-                      <div
-                        className={`max-w-[70%] px-4 py-3 rounded-2xl text-sm ${msg.sender === "customer"
-                          ? "bg-white/[0.08] text-slate-200 rounded-bl-none"
-                          : msg.sender === "bot"
-                            ? "bg-teal-500/15 text-teal-100 rounded-br-none border border-teal-500/20"
-                            : "bg-blue-500/15 text-blue-100 rounded-br-none border border-blue-500/20"
+                  selectedConv.messages.map((msg, i) => {
+                    const textBody = msg.message || msg.text || msg.content || msg.message_body || "";
+                    const showText = textBody && !(msg.image_url && textBody.trim() === "[Image]");
+
+                    return (
+                      <div key={msg.id || i} className={`flex ${msg.sender === "customer" ? "justify-start" : "justify-end"}`}>
+                        <div
+                          className={`max-w-[78%] md:max-w-[70%] px-3.5 py-2.5 rounded-2xl text-sm ${
+                            msg.sender === "customer"
+                              ? "bg-white/[0.08] text-slate-200 rounded-bl-none"
+                              : msg.sender === "bot"
+                                ? "bg-teal-500/15 text-teal-100 rounded-br-none border border-teal-500/20"
+                                : "bg-blue-500/15 text-blue-100 rounded-br-none border border-blue-500/20"
                           }`}
-                      >
-                        <p className="text-[10px] font-semibold mb-1 opacity-60 uppercase tracking-wider">
-                          {msg.sender === "customer"
-                            ? selectedConv.customer_name
-                            : msg.sender === "bot"
-                              ? "GrowBot AI"
-                              : "Agent"}
-                        </p>
-                        <p className="whitespace-pre-wrap">{msg.message || msg.text || msg.content || msg.message_body}</p>
+                        >
+                          <p className="text-[10px] font-semibold mb-1 opacity-60 uppercase tracking-wider">
+                            {msg.sender === "customer"
+                              ? selectedConv.customer_name
+                              : msg.sender === "bot"
+                                ? "GrowBot AI"
+                                : "Agent"}
+                          </p>
+
+                          {msg.image_url && (
+                            <div className="mb-1.5 overflow-hidden rounded-xl border border-white/10 bg-black/20">
+                              <img
+                                src={msg.image_url}
+                                alt="Chat attachment"
+                                onClick={() => setLightboxImage(msg.image_url)}
+                                className="max-h-64 w-auto max-w-full object-cover rounded-xl cursor-zoom-in hover:opacity-95 transition-opacity"
+                                loading="lazy"
+                              />
+                            </div>
+                          )}
+
+                          {showText && (
+                            <p className="whitespace-pre-wrap break-words">{textBody}</p>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
                 <div ref={chatEndRef} />
               </div>
 
               <div className="p-3 pb-6 md:pb-4 border-t border-white/10 bg-[hsl(220,18%,8%)] shrink-0">
-                <div className="flex gap-2">
-              <Input
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSend()}
-              placeholder="Type a reply..."
-              disabled={sending}
-              style={{ fontSize: "20px" }}
-              className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base"
-            />
+                <div className="flex items-center gap-2">
+                  {/* Hidden File Input (JPG, PNG, WEBP only) */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handleImageSelect}
+                    className="hidden"
+                  />
+
+                  {/* Left-side Image Upload Button */}
+                  <Button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sending}
+                    variant="outline"
+                    size="icon"
+                    className="bg-white/5 border-white/10 text-slate-300 hover:text-teal-400 hover:border-teal-500/40 hover:bg-teal-500/10 shrink-0"
+                    title="Attach image (JPG, PNG, WEBP up to 5MB)"
+                  >
+                    <ImagePlus className="w-4 h-4" />
+                  </Button>
+
+                  {/* Inline Compact Image Thumbnail Chip (same row, left of input) */}
+                  {selectedImage && (
+                    <div className="relative shrink-0 w-10 h-10 rounded-lg overflow-hidden border border-teal-500/40 bg-black/40 group">
+                      <img
+                        src={selectedImage.previewUrl}
+                        alt="Selected preview"
+                        className="w-full h-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSelectedImage(null)}
+                        className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 md:opacity-0 opacity-90 transition-opacity text-white"
+                        title="Remove image"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  <Input
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+                    maxLength={1024}
+                    placeholder={selectedImage ? "Add a caption (optional)..." : "Type a reply..."}
+                    disabled={sending}
+                    style={{ fontSize: "20px" }}
+                    className="bg-white/5 border-white/10 text-white focus-visible:ring-teal-500 text-base flex-1"
+                  />
+
                   <Button
                     onClick={handleSend}
-                    disabled={sending || !newMessage.trim()}
+                    disabled={sending || (!newMessage.trim() && !selectedImage)}
                     size="icon"
                     className="bg-teal-500 hover:bg-teal-600 text-black shrink-0 font-medium"
                   >
@@ -513,28 +700,21 @@ export default function UnifiedInbox() {
                     {selectedConv.tag || "lead"}
                   </span>
                 </div>
-                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.03] border border-white/5">
-                  <span className="text-xs text-slate-400">AI Bot</span>
+               <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.03] border border-white/5">
+                  <span className="text-xs text-slate-400">Chat AI Status</span>
                   <span
-                    className={`text-xs font-medium ${selectedConv.ai_active ? "text-teal-400" : "text-amber-400"
-                      }`}
+                    className={`text-xs font-medium ${
+                      !storeAiActive
+                        ? "text-rose-400"
+                        : selectedConv.ai_active
+                          ? "text-teal-400"
+                          : "text-amber-400"
+                    }`}
                   >
-                    {selectedConv.ai_active ? "Active" : "Paused"}
+                    {!storeAiActive ? "Store Paused" : selectedConv.ai_active ? "Active" : "Paused (Human)"}
                   </span>
                 </div>
               </div>
-
-              <Button
-                onClick={toggleAI}
-                variant="outline"
-                className={`w-full gap-2 ${selectedConv.ai_active
-                  ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
-                  : "border-teal-500/30 text-teal-400 hover:bg-teal-500/10 hover:text-teal-300"
-                  }`}
-              >
-                {selectedConv.ai_active ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                {selectedConv.ai_active ? "Pause AI Bot" : "Resume AI Bot"}
-              </Button>
             </div>
           ) : (
             <div className="flex items-center justify-center h-full">
@@ -542,6 +722,29 @@ export default function UnifiedInbox() {
             </div>
           )}
         </div>
+
+        {/* Fullscreen Image Lightbox Modal */}
+        {lightboxImage && (
+          <div
+            onClick={() => setLightboxImage(null)}
+            className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxImage(null)}
+              className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
+              title="Close preview"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <img
+              src={lightboxImage}
+              alt="Full size preview"
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[90vh] max-w-[92vw] object-contain rounded-xl shadow-2xl border border-white/10"
+            />
+          </div>
+        )}
       </div>
     );
   }
