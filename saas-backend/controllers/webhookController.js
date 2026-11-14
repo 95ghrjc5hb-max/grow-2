@@ -145,7 +145,7 @@ export const handleMetaWebhook = async (req, res) => {
             let audioUrl = null;
             if (msg.type === 'text') messageText = msg.text?.body || '';
             else if (msg.type === 'audio' || msg.type === 'voice') audioMediaId = msg.audio?.id || msg.voice?.id || null;
-            else if (msg.type === 'image') { messageText = msg.image?.caption || '[Image]'; imageUrl = msg.image?.link || null; }
+            else if (msg.type === 'image') { messageText = msg.image?.caption || '[Image]'; imageUrl = msg.image?.link || msg.image?.url || msg.image?.id || null; }
             else if (msg.type === 'video') messageText = msg.video?.caption || '[Video]';
             else if (msg.type === 'document') messageText = msg.document?.caption || '[Document]';
             else if (msg.type === 'location') messageText = `[Location] ${msg.location?.latitude},${msg.location?.longitude}`;
